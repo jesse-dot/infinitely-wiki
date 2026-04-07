@@ -15,6 +15,7 @@ const WIKI_DIR = path.join(__dirname, 'wiki-pages');
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
+const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY || '';
 const CLERK_PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY || '';
 const ADMIN_USER_IDS = new Set(
   (process.env.ADMIN_USER_IDS || '')
@@ -30,6 +31,10 @@ if (!fs.existsSync(WIKI_DIR)) {
   fs.mkdirSync(WIKI_DIR, { recursive: true });
 }
 
+if (!CLERK_SECRET_KEY) {
+  throw new Error('CLERK_SECRET_KEY environment variable is required.');
+}
+
 app.use(express.json());
 app.use(clerkMiddleware());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -43,10 +48,14 @@ const readLimiter = rateLimit({
   message: { error: 'Too many requests. Please try again later.' },
 });
 
+app.get('/clerk.browser.js', readLimiter, (req, res) => {
+  return res.sendFile(path.join(__dirname, 'node_modules', '@clerk', 'clerk-js', 'dist', 'clerk.browser.js'));
+});
+
 const adminGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: ADMIN_GENERATE_LIMIT,
-  keyGenerator: (req) => req.user.userId,
+  keyGenerator: (req) => getAuth(req).userId || req.ip,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Admin generation limit reached. Please try again later.' },
@@ -55,7 +64,7 @@ const adminGenerateLimiter = rateLimit({
 const userGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: USER_GENERATE_LIMIT,
-  keyGenerator: (req) => req.user.userId,
+  keyGenerator: (req) => getAuth(req).userId || req.ip,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'User generation limit reached. Please try again later.' },
@@ -93,7 +102,7 @@ function extractTitle(content, fallback) {
 function requireAuth(allowedRoles = []) {
   return (req, res, next) => {
     const auth = getAuth(req);
-    if (!auth || !auth.userId) {
+    if (!auth?.userId) {
       if (req.path.startsWith('/api/')) {
         return res.status(401).json({ error: 'Authentication required.' });
       }
@@ -120,7 +129,11 @@ async function generateArticleWithFallback(genAI, prompt) {
     const result = await primary.generateContent(prompt);
     return { text: result.response.text(), modelUsed: PRIMARY_MODEL };
   } catch (primaryErr) {
-    if (FALLBACK_MODEL === PRIMARY_MODEL) throw primaryErr;
+    if (FALLBACK_MODEL === PRIMARY_MODEL) {
+      throw new Error(
+        `Primary and fallback models are both "${PRIMARY_MODEL}". Single-attempt generation failed: ${primaryErr.message || primaryErr}`
+      );
+    }
 
     const fallback = genAI.getGenerativeModel({ model: FALLBACK_MODEL });
     try {
@@ -214,9 +227,10 @@ Use proper Markdown formatting: headings (##, ###), bold (**text**), bullet list
 Do NOT include any preamble, disclaimers, or meta-commentary — output ONLY the Markdown article content.`;
 
     const { text, modelUsed } = await generateArticleWithFallback(genAI, prompt);
+    const safeModelUsed = String(modelUsed).replace(/[^a-zA-Z0-9._-]/g, '');
 
     // Prepend the AI warning banner
-    const banner = `> ⚠️ **AI-Generated Content** — This article was created by an AI (Gemma). It may contain inaccuracies. Do not rely on it as a factual reference.\n\n`;
+    const banner = `> ⚠️ **AI-Generated Content** — This article was created by an AI model (${safeModelUsed || 'unknown-model'}). It may contain inaccuracies. Do not rely on it as a factual reference.\n\n`;
     const fullContent = banner + text;
 
     fs.writeFileSync(safe.resolved, fullContent, 'utf8');

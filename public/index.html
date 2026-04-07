@@ -66,7 +66,7 @@
     <p>Powered by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
   </footer>
 
-  <script src="https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js"></script>
+  <script src="/clerk.browser.js"></script>
   <script>
     const form = document.getElementById('search-form');
     const input = document.getElementById('search-input');
@@ -84,6 +84,8 @@
     const sessionUsername = document.getElementById('session-username');
     const sessionRole = document.getElementById('session-role');
     const logoutBtn = document.getElementById('logout-btn');
+    // Keep UI labels compact while still showing meaningful identity context.
+    const MAX_DISPLAY_NAME_LENGTH = 100;
 
     let currentUser = null;
     let clerk = null;
@@ -149,8 +151,9 @@
         if (!res.ok) return;
         const pages = await res.json();
         renderPages(pages);
-      } catch (_) {
-        // silently ignore
+      } catch (err) {
+        console.error('Failed to load pages:', err);
+        pagesList.innerHTML = '<li class="pages-empty">Could not load pages right now. Please try again.</li>';
       }
     }
 
@@ -173,6 +176,11 @@
       return div.innerHTML;
     }
 
+    function safeDisplayName(value) {
+      const text = typeof value === 'string' ? value : '';
+      return text.trim().slice(0, MAX_DISPLAY_NAME_LENGTH) || 'User';
+    }
+
     async function checkSession() {
       if (!clerk) {
         setAuthState(null);
@@ -191,11 +199,12 @@
           clerk.user?.fullName ||
           authData.userId;
         setAuthState({
-          username: preferredName,
+          username: safeDisplayName(preferredName),
           role: authData.role,
         });
         await loadPages();
-      } catch (_) {
+      } catch (err) {
+        console.error('Failed to check authentication session:', err);
         setAuthState(null);
       }
     }
@@ -219,7 +228,8 @@
       }
       try {
         await clerk.signOut({ redirectUrl: window.location.href });
-      } catch (_) {
+      } catch (err) {
+        console.error('Failed to sign out:', err);
         // ignore network errors and clear local UI state
       }
       setAuthState(null);
@@ -279,7 +289,8 @@
         clerk = window.Clerk;
         await clerk.load({ publishableKey: config.publishableKey });
         await checkSession();
-      } catch (_) {
+      } catch (err) {
+        console.error('Failed to initialize Clerk:', err);
         showLoginError('Failed to initialize authentication.');
         setAuthState(null);
       }
