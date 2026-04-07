@@ -16,7 +16,43 @@
       <h1 class="hero-title">Infinitely Wiki</h1>
       <p class="hero-subtitle">An AI-generated encyclopedia powered by Gemma. Search any topic and get a Wikipedia-style article instantly.</p>
 
-      <form id="search-form" class="search-form" autocomplete="off">
+      <section class="auth-panel" id="auth-panel">
+        <h2 class="auth-heading">Sign in</h2>
+        <form id="login-form" class="login-form" autocomplete="off">
+          <div class="login-fields">
+            <input
+              type="text"
+              id="username-input"
+              class="search-input"
+              placeholder="Username"
+              maxlength="100"
+              required
+              aria-label="Username"
+            />
+            <input
+              type="password"
+              id="password-input"
+              class="search-input"
+              placeholder="Password"
+              maxlength="200"
+              required
+              aria-label="Password"
+            />
+          </div>
+          <button type="submit" class="search-btn auth-btn" id="login-btn">Sign in</button>
+          <p id="login-error-msg" class="error-msg hidden" role="alert"></p>
+        </form>
+      </section>
+
+      <section class="session-panel hidden" id="session-panel">
+        <p class="session-text">
+          Signed in as <strong id="session-username"></strong>
+          <span class="role-badge" id="session-role"></span>
+        </p>
+        <button type="button" class="logout-btn" id="logout-btn">Log out</button>
+      </section>
+
+      <form id="search-form" class="search-form hidden" autocomplete="off">
         <div class="search-box">
           <input
             type="text"
@@ -56,6 +92,19 @@
     const spinner = document.getElementById('btn-spinner');
     const errorMsg = document.getElementById('error-msg');
     const pagesList = document.getElementById('pages-list');
+    const pagesSection = document.getElementById('pages-section');
+    const authPanel = document.getElementById('auth-panel');
+    const sessionPanel = document.getElementById('session-panel');
+    const loginForm = document.getElementById('login-form');
+    const usernameInput = document.getElementById('username-input');
+    const passwordInput = document.getElementById('password-input');
+    const loginErrorMsg = document.getElementById('login-error-msg');
+    const loginBtn = document.getElementById('login-btn');
+    const sessionUsername = document.getElementById('session-username');
+    const sessionRole = document.getElementById('session-role');
+    const logoutBtn = document.getElementById('logout-btn');
+
+    let currentUser = null;
 
     function setLoading(loading) {
       btn.disabled = loading;
@@ -74,9 +123,50 @@
       errorMsg.classList.add('hidden');
     }
 
+    function showLoginError(msg) {
+      loginErrorMsg.textContent = msg;
+      loginErrorMsg.classList.remove('hidden');
+    }
+
+    function clearLoginError() {
+      loginErrorMsg.textContent = '';
+      loginErrorMsg.classList.add('hidden');
+    }
+
+    function setAuthState(user) {
+      currentUser = user || null;
+      const isAuthenticated = !!currentUser;
+      authPanel.classList.toggle('hidden', isAuthenticated);
+      sessionPanel.classList.toggle('hidden', !isAuthenticated);
+      form.classList.toggle('hidden', !isAuthenticated);
+      pagesSection.classList.toggle('hidden', !isAuthenticated);
+
+      if (!isAuthenticated) {
+        form.reset();
+        input.disabled = true;
+        btn.disabled = true;
+        pagesList.innerHTML = '<li class="pages-empty">Sign in to view generated articles.</li>';
+        return;
+      }
+
+      sessionUsername.textContent = currentUser.username;
+      sessionRole.textContent = currentUser.role;
+      const canGenerate = currentUser.role === 'admin';
+      input.disabled = !canGenerate;
+      btn.disabled = !canGenerate;
+      input.placeholder = canGenerate ? 'Search any topic…' : 'Only Admin accounts can generate new articles';
+      if (!canGenerate) {
+        btnText.textContent = 'Generate';
+      }
+    }
+
     async function loadPages() {
       try {
         const res = await fetch('/api/pages');
+        if (res.status === 401) {
+          setAuthState(null);
+          return;
+        }
         if (!res.ok) return;
         const pages = await res.json();
         renderPages(pages);
@@ -104,9 +194,71 @@
       return div.innerHTML;
     }
 
+    async function checkSession() {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (!res.ok) {
+          setAuthState(null);
+          return;
+        }
+        const user = await res.json();
+        setAuthState(user);
+        await loadPages();
+      } catch (_) {
+        setAuthState(null);
+      }
+    }
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearLoginError();
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      if (!username || !password) {
+        showLoginError('Username and password are required.');
+        return;
+      }
+
+      loginBtn.disabled = true;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showLoginError(data.error || 'Sign in failed.');
+          return;
+        }
+        usernameInput.value = '';
+        passwordInput.value = '';
+        setAuthState(data);
+        await loadPages();
+      } catch (_) {
+        showLoginError('Network error. Please check your connection and try again.');
+      } finally {
+        loginBtn.disabled = false;
+      }
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (_) {
+        // ignore network errors and clear local UI state
+      } finally {
+        setAuthState(null);
+      }
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       clearError();
+      if (!currentUser || currentUser.role !== 'admin') {
+        showError('Only Admin accounts can generate new articles.');
+        return;
+      }
       const topic = input.value.trim();
       if (!topic) return;
 
@@ -118,6 +270,11 @@
           body: JSON.stringify({ topic }),
         });
         const data = await res.json();
+        if (res.status === 401) {
+          setAuthState(null);
+          showError('Your session has expired. Please sign in again.');
+          return;
+        }
         if (!res.ok) {
           showError(data.error || 'Something went wrong. Please try again.');
           return;
@@ -130,7 +287,7 @@
       }
     });
 
-    loadPages();
+    checkSession();
   </script>
 </body>
 </html>
