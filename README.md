@@ -25,15 +25,9 @@ An AI-powered encyclopedia that generates Wikipedia-style articles on any topic 
 # Install dependencies
 npm install
 
-# Set your Gemini API key
-export GEMINI_API_KEY=your_api_key_here
-
-# Configure Clerk auth
-export CLERK_SECRET_KEY=your_clerk_secret_key
-export CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
-
-# Optional: comma-separated Clerk user IDs that should always be Admins
-export ADMIN_USER_IDS=user_abc123,user_def456
+# Copy the environment template and fill in your keys
+cp .env.example .env
+# Edit .env with your Gemini API key, Clerk keys, and any optional settings
 
 # Start the server
 npm start
@@ -66,6 +60,8 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
   - Pro users: `100` generations/month
 
 ## Environment Variables
+
+This app loads environment variables from `.env` using `dotenv`.
 
 | Variable | Description |
 |---|---|
