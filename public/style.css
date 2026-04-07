@@ -1,0 +1,393 @@
+/* =====================================================
+   Infinitely Wiki — Global Styles
+   ===================================================== */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-bg: #f8f9fa;
+  --color-surface: #ffffff;
+  --color-border: #a2a9b1;
+  --color-primary: #3366cc;
+  --color-primary-hover: #2a55a5;
+  --color-text: #202122;
+  --color-text-muted: #54595d;
+  --color-warning-bg: #fff3cd;
+  --color-warning-border: #f0ad4e;
+  --color-warning-text: #664d03;
+  --color-error: #cc0000;
+  --color-footer-bg: #f8f9fa;
+  --font-sans: 'Linux Libertine', 'Georgia', 'Times', serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --max-width: 960px;
+  --radius: 4px;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-ui);
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Site Header ── */
+.site-header {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.75rem 1.5rem;
+}
+
+.site-logo {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.site-logo:hover {
+  text-decoration: underline;
+}
+
+/* ── Site Footer ── */
+.site-footer {
+  background: var(--color-footer-bg);
+  border-top: 1px solid var(--color-border);
+  padding: 1rem 1.5rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  margin-top: auto;
+}
+
+.site-footer a {
+  color: var(--color-primary);
+}
+
+/* ── Landing Page ── */
+body.landing {
+  background: var(--color-bg);
+}
+
+.landing-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3rem 1.5rem 2rem;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  width: 100%;
+}
+
+.hero {
+  text-align: center;
+  width: 100%;
+  max-width: 640px;
+  margin-bottom: 3rem;
+}
+
+.hero-title {
+  font-size: 2.75rem;
+  font-weight: 700;
+  color: var(--color-text);
+  margin-bottom: 0.5rem;
+  line-height: 1.2;
+}
+
+.hero-subtitle {
+  color: var(--color-text-muted);
+  font-size: 1.1rem;
+  margin-bottom: 2rem;
+}
+
+/* ── Search Form ── */
+.search-form {
+  width: 100%;
+}
+
+.search-box {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  background: var(--color-surface);
+}
+
+.search-input {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  font-size: 1.05rem;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  background: transparent;
+  font-family: var(--font-ui);
+}
+
+.search-input:focus {
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+
+.search-btn {
+  padding: 0.75rem 1.5rem;
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: background 0.15s;
+}
+
+.search-btn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.search-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* ── Spinner ── */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.5);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Error Message ── */
+.error-msg {
+  color: var(--color-error);
+  font-size: 0.9rem;
+  margin-top: 0.6rem;
+  text-align: left;
+}
+
+/* ── Pages Section ── */
+.pages-section {
+  width: 100%;
+  max-width: 640px;
+}
+
+.pages-heading {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.4rem;
+}
+
+.pages-list {
+  list-style: none;
+  padding: 0;
+}
+
+.page-item {
+  border-bottom: 1px solid #eaecf0;
+}
+
+.page-item:last-child {
+  border-bottom: none;
+}
+
+.page-link {
+  display: block;
+  padding: 0.6rem 0.25rem;
+  color: var(--color-primary);
+  text-decoration: none;
+  font-size: 1rem;
+}
+
+.page-link:hover {
+  text-decoration: underline;
+  background: #f0f4ff;
+}
+
+.pages-empty {
+  color: var(--color-text-muted);
+  padding: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+/* =====================================================
+   Wiki Article Page
+   ===================================================== */
+.wiki-article {
+  max-width: var(--max-width);
+  margin: 2rem auto;
+  padding: 1.5rem 2rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.7;
+  flex: 1;
+}
+
+/* ── AI Warning Banner (rendered from blockquote) ── */
+.wiki-article blockquote {
+  background: var(--color-warning-bg);
+  border-left: 4px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  padding: 0.75rem 1rem;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin: 0 0 1.5rem 0;
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+}
+
+.wiki-article blockquote p {
+  margin: 0;
+}
+
+/* ── Article Typography ── */
+.wiki-article h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.4rem;
+  margin-bottom: 1rem;
+  color: var(--color-text);
+}
+
+.wiki-article h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  border-bottom: 1px solid #eaecf0;
+  padding-bottom: 0.25rem;
+  margin: 1.75rem 0 0.75rem;
+  color: var(--color-text);
+}
+
+.wiki-article h3 {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin: 1.25rem 0 0.5rem;
+  color: var(--color-text);
+}
+
+.wiki-article h4, .wiki-article h5, .wiki-article h6 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1rem 0 0.4rem;
+}
+
+.wiki-article p {
+  margin-bottom: 1rem;
+}
+
+.wiki-article ul, .wiki-article ol {
+  margin: 0.5rem 0 1rem 2rem;
+}
+
+.wiki-article li {
+  margin-bottom: 0.25rem;
+}
+
+.wiki-article a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.wiki-article a:hover {
+  text-decoration: underline;
+}
+
+.wiki-article strong {
+  font-weight: 700;
+}
+
+.wiki-article em {
+  font-style: italic;
+}
+
+.wiki-article code {
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+  background: #f4f4f4;
+  padding: 0.1em 0.3em;
+  border-radius: 2px;
+}
+
+.wiki-article pre {
+  background: #f4f4f4;
+  padding: 1rem;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+.wiki-article pre code {
+  background: none;
+  padding: 0;
+}
+
+.wiki-article hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.5rem 0;
+}
+
+.wiki-article table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 1rem;
+  font-size: 0.95em;
+}
+
+.wiki-article th, .wiki-article td {
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.wiki-article th {
+  background: #eaecf0;
+  font-weight: 700;
+}
+
+/* ── Responsive ── */
+@media (max-width: 600px) {
+  .hero-title {
+    font-size: 1.9rem;
+  }
+  .wiki-article {
+    padding: 1rem;
+    margin: 1rem;
+  }
+  .search-btn {
+    padding: 0.75rem 1rem;
+  }
+}

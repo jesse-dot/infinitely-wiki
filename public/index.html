@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Infinitely Wiki — AI-Powered Encyclopedia</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="landing">
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+  </header>
+
+  <main class="landing-main">
+    <div class="hero">
+      <h1 class="hero-title">Infinitely Wiki</h1>
+      <p class="hero-subtitle">An AI-generated encyclopedia powered by Gemma. Search any topic and get a Wikipedia-style article instantly.</p>
+
+      <form id="search-form" class="search-form" autocomplete="off">
+        <div class="search-box">
+          <input
+            type="text"
+            id="search-input"
+            class="search-input"
+            placeholder="Search any topic…"
+            maxlength="200"
+            required
+            aria-label="Search topic"
+          />
+          <button type="submit" class="search-btn" id="search-btn">
+            <span id="btn-text">Generate</span>
+            <span id="btn-spinner" class="spinner hidden" aria-hidden="true"></span>
+          </button>
+        </div>
+        <p id="error-msg" class="error-msg hidden" role="alert"></p>
+      </form>
+    </div>
+
+    <section class="pages-section" id="pages-section">
+      <h2 class="pages-heading">Recently Generated Articles</h2>
+      <ul class="pages-list" id="pages-list">
+        <li class="pages-empty">No articles yet. Search for a topic above to generate one!</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>Powered by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
+  </footer>
+
+  <script>
+    const form = document.getElementById('search-form');
+    const input = document.getElementById('search-input');
+    const btn = document.getElementById('search-btn');
+    const btnText = document.getElementById('btn-text');
+    const spinner = document.getElementById('btn-spinner');
+    const errorMsg = document.getElementById('error-msg');
+    const pagesList = document.getElementById('pages-list');
+
+    function setLoading(loading) {
+      btn.disabled = loading;
+      input.disabled = loading;
+      btnText.textContent = loading ? 'Generating…' : 'Generate';
+      spinner.classList.toggle('hidden', !loading);
+    }
+
+    function showError(msg) {
+      errorMsg.textContent = msg;
+      errorMsg.classList.remove('hidden');
+    }
+
+    function clearError() {
+      errorMsg.textContent = '';
+      errorMsg.classList.add('hidden');
+    }
+
+    async function loadPages() {
+      try {
+        const res = await fetch('/api/pages');
+        if (!res.ok) return;
+        const pages = await res.json();
+        renderPages(pages);
+      } catch (_) {
+        // silently ignore
+      }
+    }
+
+    function renderPages(pages) {
+      if (!pages || pages.length === 0) {
+        pagesList.innerHTML = '<li class="pages-empty">No articles yet. Search for a topic above to generate one!</li>';
+        return;
+      }
+      pagesList.innerHTML = pages
+        .map(
+          (p) =>
+            `<li class="page-item"><a href="/wiki/${encodeURIComponent(p.slug)}" class="page-link">${escapeHtml(p.title)}</a></li>`
+        )
+        .join('');
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.appendChild(document.createTextNode(str));
+      return div.innerHTML;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearError();
+      const topic = input.value.trim();
+      if (!topic) return;
+
+      setLoading(true);
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showError(data.error || 'Something went wrong. Please try again.');
+          return;
+        }
+        window.location.href = `/wiki/${encodeURIComponent(data.slug)}`;
+      } catch (err) {
+        showError('Network error. Please check your connection and try again.');
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    loadPages();
+  </script>
+</body>
+</html>
