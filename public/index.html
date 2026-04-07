@@ -16,7 +16,25 @@
       <h1 class="hero-title">Infinitely Wiki</h1>
       <p class="hero-subtitle">An AI-generated encyclopedia powered by Gemma. Search any topic and get a Wikipedia-style article instantly.</p>
 
-      <form id="search-form" class="search-form" autocomplete="off">
+      <section class="auth-panel" id="auth-panel">
+        <h2 class="auth-heading">Authentication required</h2>
+        <p class="auth-copy">Sign in or create an account with Clerk to generate and view pages.</p>
+        <div class="auth-actions">
+          <button type="button" class="search-btn auth-btn" id="sign-in-btn">Sign in</button>
+          <button type="button" class="auth-toggle-btn" id="sign-up-btn">Sign up</button>
+        </div>
+        <p id="login-error-msg" class="error-msg hidden" role="alert"></p>
+      </section>
+
+      <section class="session-panel hidden" id="session-panel">
+        <p class="session-text">
+          Signed in as <strong id="session-username"></strong>
+          <span class="role-badge" id="session-role"></span>
+        </p>
+        <button type="button" class="logout-btn" id="logout-btn">Log out</button>
+      </section>
+
+      <form id="search-form" class="search-form hidden" autocomplete="off">
         <div class="search-box">
           <input
             type="text"
@@ -48,6 +66,7 @@
     <p>Powered by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
   </footer>
 
+  <script src="/clerk.browser.js"></script>
   <script>
     const form = document.getElementById('search-form');
     const input = document.getElementById('search-input');
@@ -56,6 +75,20 @@
     const spinner = document.getElementById('btn-spinner');
     const errorMsg = document.getElementById('error-msg');
     const pagesList = document.getElementById('pages-list');
+    const pagesSection = document.getElementById('pages-section');
+    const authPanel = document.getElementById('auth-panel');
+    const sessionPanel = document.getElementById('session-panel');
+    const loginErrorMsg = document.getElementById('login-error-msg');
+    const signInBtn = document.getElementById('sign-in-btn');
+    const signUpBtn = document.getElementById('sign-up-btn');
+    const sessionUsername = document.getElementById('session-username');
+    const sessionRole = document.getElementById('session-role');
+    const logoutBtn = document.getElementById('logout-btn');
+    // Keep UI labels compact while still showing meaningful identity context.
+    const MAX_DISPLAY_NAME_LENGTH = 100;
+
+    let currentUser = null;
+    let clerk = null;
 
     function setLoading(loading) {
       btn.disabled = loading;
@@ -74,14 +107,53 @@
       errorMsg.classList.add('hidden');
     }
 
+    function showLoginError(msg) {
+      loginErrorMsg.textContent = msg;
+      loginErrorMsg.classList.remove('hidden');
+    }
+
+    function clearLoginError() {
+      loginErrorMsg.textContent = '';
+      loginErrorMsg.classList.add('hidden');
+    }
+
+    function setAuthState(user) {
+      currentUser = user || null;
+      const isAuthenticated = !!currentUser;
+      authPanel.classList.toggle('hidden', isAuthenticated);
+      sessionPanel.classList.toggle('hidden', !isAuthenticated);
+      form.classList.toggle('hidden', !isAuthenticated);
+      pagesSection.classList.toggle('hidden', !isAuthenticated);
+
+      if (!isAuthenticated) {
+        form.reset();
+        input.disabled = true;
+        btn.disabled = true;
+        pagesList.innerHTML = '<li class="pages-empty">Sign in or sign up to generate and view articles.</li>';
+        return;
+      }
+
+      sessionUsername.textContent = currentUser.username;
+      sessionRole.textContent = currentUser.role;
+      input.disabled = false;
+      btn.disabled = false;
+      input.placeholder = 'Search any topic…';
+      btnText.textContent = 'Generate';
+    }
+
     async function loadPages() {
       try {
         const res = await fetch('/api/pages');
+        if (res.status === 401) {
+          setAuthState(null);
+          return;
+        }
         if (!res.ok) return;
         const pages = await res.json();
         renderPages(pages);
-      } catch (_) {
-        // silently ignore
+      } catch (err) {
+        console.error('Failed to load pages:', err);
+        pagesList.innerHTML = '<li class="pages-empty">Could not load pages right now. Please try again.</li>';
       }
     }
 
@@ -104,9 +176,72 @@
       return div.innerHTML;
     }
 
+    function safeDisplayName(value) {
+      const text = typeof value === 'string' ? value : '';
+      return text.trim().slice(0, MAX_DISPLAY_NAME_LENGTH) || 'User';
+    }
+
+    async function checkSession() {
+      if (!clerk) {
+        setAuthState(null);
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/me');
+        if (!res.ok) {
+          setAuthState(null);
+          return;
+        }
+        const authData = await res.json();
+        const preferredName =
+          clerk.user?.username ||
+          clerk.user?.primaryEmailAddress?.emailAddress ||
+          clerk.user?.fullName ||
+          authData.userId;
+        setAuthState({
+          username: safeDisplayName(preferredName),
+          role: authData.role,
+        });
+        await loadPages();
+      } catch (err) {
+        console.error('Failed to check authentication session:', err);
+        setAuthState(null);
+      }
+    }
+
+    signInBtn.addEventListener('click', async () => {
+      clearLoginError();
+      if (!clerk) return;
+      await clerk.redirectToSignIn({ afterSignInUrl: window.location.href });
+    });
+
+    signUpBtn.addEventListener('click', async () => {
+      clearLoginError();
+      if (!clerk) return;
+      await clerk.redirectToSignUp({ afterSignUpUrl: window.location.href });
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+      if (!clerk) {
+        setAuthState(null);
+        return;
+      }
+      try {
+        await clerk.signOut({ redirectUrl: window.location.href });
+      } catch (err) {
+        console.error('Failed to sign out:', err);
+        // ignore network errors and clear local UI state
+      }
+      setAuthState(null);
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       clearError();
+      if (!currentUser) {
+        showError('Please sign in.');
+        return;
+      }
       const topic = input.value.trim();
       if (!topic) return;
 
@@ -118,6 +253,11 @@
           body: JSON.stringify({ topic }),
         });
         const data = await res.json();
+        if (res.status === 401) {
+          setAuthState(null);
+          showError('Your session has expired. Please sign in again.');
+          return;
+        }
         if (!res.ok) {
           showError(data.error || 'Something went wrong. Please try again.');
           return;
@@ -130,7 +270,33 @@
       }
     });
 
-    loadPages();
+    async function initClerk() {
+      try {
+        const configRes = await fetch('/api/auth/config');
+        const config = await configRes.json().catch(() => ({}));
+        if (!configRes.ok || !config.publishableKey) {
+          showLoginError(config.error || 'Authentication is not configured.');
+          setAuthState(null);
+          return;
+        }
+
+        if (!window.Clerk) {
+          showLoginError('Failed to load Clerk SDK.');
+          setAuthState(null);
+          return;
+        }
+
+        clerk = window.Clerk;
+        await clerk.load({ publishableKey: config.publishableKey });
+        await checkSession();
+      } catch (err) {
+        console.error('Failed to initialize Clerk:', err);
+        showLoginError('Failed to initialize authentication.');
+        setAuthState(null);
+      }
+    }
+
+    initClerk();
   </script>
 </body>
 </html>

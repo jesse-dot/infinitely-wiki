@@ -113,6 +113,93 @@ body.landing {
   margin-bottom: 2rem;
 }
 
+.auth-panel,
+.session-panel {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.auth-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  text-align: left;
+}
+
+.auth-heading {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.auth-copy {
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.auth-btn {
+  justify-content: center;
+}
+
+.auth-toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  text-align: left;
+  padding: 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.auth-toggle-btn:hover {
+  text-decoration: underline;
+}
+
+.session-panel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.session-text {
+  color: var(--color-text-muted);
+}
+
+.role-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.logout-btn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.8rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  background: #f4f5f6;
+}
+
 /* ── Search Form ── */
 .search-form {
   width: 100%;
@@ -382,6 +469,10 @@ body.landing {
 @media (max-width: 600px) {
   .hero-title {
     font-size: 1.9rem;
+  }
+  .session-panel {
+    flex-direction: column;
+    align-items: flex-start;
   }
   .wiki-article {
     padding: 1rem;
