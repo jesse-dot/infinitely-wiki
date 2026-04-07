@@ -1,5 +1,7 @@
 'use strict';
 
+require('dotenv').config();
+
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { clerkMiddleware, getAuth } = require('@clerk/express');
