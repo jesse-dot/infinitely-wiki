@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Panel — Infinitely Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="landing">
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+  </header>
+
+  <main class="landing-main">
+    <div class="hero" style="max-width: 860px;">
+      <h1 class="hero-title">Admin Panel</h1>
+      <p class="hero-subtitle">Generate Pro keys and promote users to admin.</p>
+
+      <section class="pro-panel">
+        <h2 class="auth-heading">Generate Pro key</h2>
+        <form id="generate-key-form" class="pro-redeem-form">
+          <select id="key-duration" class="search-input" aria-label="Plan duration">
+            <option value="monthly" selected>Monthly</option>
+            <option value="annual">Annual</option>
+            <option value="permanent">Permanent</option>
+          </select>
+          <button type="submit" class="search-btn">Generate Key</button>
+        </form>
+        <p id="key-msg" class="error-msg hidden" role="status"></p>
+      </section>
+
+      <section class="pro-panel">
+        <h2 class="auth-heading">Promote user to admin</h2>
+        <form id="promote-user-form" class="pro-redeem-form">
+          <input type="text" id="promote-user-id" class="search-input" maxlength="128" pattern="^[a-zA-Z0-9_-]+$" placeholder="Clerk user ID (e.g., user_123)" aria-label="User ID to promote" required />
+          <button type="submit" class="search-btn">Promote</button>
+        </form>
+        <p id="promote-msg" class="error-msg hidden" role="status"></p>
+      </section>
+
+      <section class="pro-panel">
+        <h2 class="auth-heading">Known users</h2>
+        <ul id="users-list" class="pages-list">
+          <li class="pages-empty">Loading users…</li>
+        </ul>
+      </section>
+
+      <section class="pro-panel">
+        <h2 class="auth-heading">Generated Pro keys</h2>
+        <ul id="keys-list" class="pages-list">
+          <li class="pages-empty">Loading keys…</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="/">← Back to home</a></p>
+  </footer>
+
+  <script src="/clerk.browser.js"></script>
+  <script>
+    const generateKeyForm = document.getElementById('generate-key-form');
+    const keyDuration = document.getElementById('key-duration');
+    const keyMsg = document.getElementById('key-msg');
+    const promoteUserForm = document.getElementById('promote-user-form');
+    const promoteUserId = document.getElementById('promote-user-id');
+    const promoteMsg = document.getElementById('promote-msg');
+    const usersList = document.getElementById('users-list');
+    const keysList = document.getElementById('keys-list');
+
+    function showMessage(el, text, isError) {
+      el.textContent = text;
+      el.classList.remove('hidden');
+      el.classList.toggle('success-msg', !isError);
+      el.classList.toggle('error-msg', isError);
+    }
+
+    function escapeHtml(value) {
+      const div = document.createElement('div');
+      div.appendChild(document.createTextNode(String(value ?? '')));
+      return div.innerHTML;
+    }
+
+    function formatPlan(user) {
+      if (user.role === 'admin') return 'admin';
+      if (user.plan?.isPermanent) return 'pro (permanent)';
+      if (user.plan?.isPro) return `pro (until ${new Date(user.plan.expiresAt).toLocaleDateString()})`;
+      return 'free';
+    }
+
+    function formatGeneration(user) {
+      const gen = user.generation || {};
+      if (gen.monthlyLimit === null) return 'unlimited/month';
+      return `${gen.monthlyUsed}/${gen.monthlyLimit} used this month`;
+    }
+
+    async function loadOverview() {
+      try {
+        const res = await fetch('/api/admin/overview');
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = '/';
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to load admin data.');
+        }
+        const users = data.users || [];
+        const keys = data.proKeys || [];
+
+        usersList.innerHTML = users.length
+          ? users.map((user) => (
+              `<li class="page-item"><span class="page-link">${escapeHtml(user.userId)} — ${escapeHtml(user.role)} — ${escapeHtml(formatPlan(user))} — ${escapeHtml(formatGeneration(user))}</span></li>`
+            )).join('')
+          : '<li class="pages-empty">No users found yet.</li>';
+
+        keysList.innerHTML = keys.length
+          ? keys.map((key) => {
+              const redeemed = key.redeemedBy
+                ? `redeemed by ${key.redeemedBy}`
+                : 'not redeemed';
+              return `<li class="page-item"><span class="page-link">${escapeHtml(key.key)} — ${escapeHtml(key.duration)} — ${escapeHtml(redeemed)}</span></li>`;
+            }).join('')
+          : '<li class="pages-empty">No Pro keys generated yet.</li>';
+      } catch (err) {
+        usersList.innerHTML = '<li class="pages-empty">Failed to load users.</li>';
+        keysList.innerHTML = '<li class="pages-empty">Failed to load keys.</li>';
+      }
+    }
+
+    generateKeyForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      keyMsg.classList.add('hidden');
+      try {
+        const res = await fetch('/api/admin/pro-keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ duration: keyDuration.value }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showMessage(keyMsg, data.error || 'Failed to generate key.', true);
+          return;
+        }
+        showMessage(keyMsg, `Generated key: ${data.key} (${data.duration})`, false);
+        await loadOverview();
+      } catch (err) {
+        showMessage(keyMsg, 'Network error while generating key.', true);
+      }
+    });
+
+    promoteUserForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      promoteMsg.classList.add('hidden');
+      const userId = promoteUserId.value.trim();
+      if (!userId) return;
+      try {
+        const res = await fetch('/api/admin/users/promote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showMessage(promoteMsg, data.error || 'Failed to promote user.', true);
+          return;
+        }
+        promoteUserForm.reset();
+        showMessage(promoteMsg, `Promoted ${data.userId} to admin.`, false);
+        await loadOverview();
+      } catch (err) {
+        showMessage(promoteMsg, 'Network error while promoting user.', true);
+      }
+    });
+
+    loadOverview();
+  </script>
+</body>
+</html>

@@ -4,31 +4,39 @@ const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { clerkMiddleware, getAuth } = require('@clerk/express');
 const { marked } = require('marked');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const WIKI_DIR = path.join(__dirname, 'wiki-pages');
+const DATA_DIR = path.join(__dirname, 'data');
+const AUTH_STATE_FILE = path.join(DATA_DIR, 'auth-state.json');
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY || '';
 const CLERK_PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY || '';
+const MAX_PRO_KEY_GENERATION_ATTEMPTS = Number(process.env.MAX_PRO_KEY_GENERATION_ATTEMPTS || 20);
 const ADMIN_USER_IDS = new Set(
   (process.env.ADMIN_USER_IDS || '')
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean)
 );
-const ADMIN_GENERATE_LIMIT = Number(process.env.ADMIN_GENERATE_LIMIT || 20);
-const USER_GENERATE_LIMIT = Number(process.env.USER_GENERATE_LIMIT || 5);
+const ADMIN_GENERATE_LIMIT = Number(process.env.ADMIN_GENERATE_LIMIT || 50);
+const PRO_GENERATE_MONTHLY_LIMIT = Number(process.env.PRO_GENERATE_MONTHLY_LIMIT || 100);
+const USER_GENERATE_MONTHLY_LIMIT = Number(process.env.USER_GENERATE_MONTHLY_LIMIT || 10);
 
 // Ensure wiki-pages directory exists
 if (!fs.existsSync(WIKI_DIR)) {
   fs.mkdirSync(WIKI_DIR, { recursive: true });
+}
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 if (!CLERK_SECRET_KEY) {
@@ -38,6 +46,195 @@ if (!CLERK_SECRET_KEY) {
 app.use(express.json());
 app.use(clerkMiddleware());
 app.use(express.static(path.join(__dirname, 'public')));
+
+function loadAuthState() {
+  const emptyState = { users: Object.create(null), proKeys: Object.create(null) };
+
+  function toSafeMap(input) {
+    const safe = Object.create(null);
+    if (!input || typeof input !== 'object') return safe;
+    for (const [rawKey, value] of Object.entries(input)) {
+      const key = String(rawKey);
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      safe[key] = value;
+    }
+    return safe;
+  }
+
+  if (!fs.existsSync(AUTH_STATE_FILE)) {
+    return emptyState;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(AUTH_STATE_FILE, 'utf8'));
+    return {
+      users: toSafeMap(parsed.users),
+      proKeys: toSafeMap(parsed.proKeys),
+    };
+  } catch {
+    return emptyState;
+  }
+}
+
+let authState = loadAuthState();
+
+function saveAuthState() {
+  fs.writeFileSync(AUTH_STATE_FILE, JSON.stringify(authState, null, 2), 'utf8');
+}
+
+function getCurrentMonthKey() {
+  // Use UTC month boundaries so quota resets are consistent regardless of server timezone.
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function isFutureIso(value) {
+  if (!value) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time > Date.now();
+}
+
+function getPlanForUser(record) {
+  if (record.proPermanent) {
+    return {
+      name: 'pro',
+      isPro: true,
+      isPermanent: true,
+      expiresAt: null,
+    };
+  }
+  if (isFutureIso(record.proExpiresAt)) {
+    return {
+      name: 'pro',
+      isPro: true,
+      isPermanent: false,
+      expiresAt: record.proExpiresAt,
+    };
+  }
+  if (record.proExpiresAt) {
+    record.proExpiresAt = null;
+    saveAuthState();
+  }
+  return {
+    name: 'free',
+    isPro: false,
+    isPermanent: false,
+    expiresAt: null,
+  };
+}
+
+function normalizeUserId(value) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 128);
+  if (!normalized || normalized === '__proto__' || normalized === 'constructor' || normalized === 'prototype') {
+    return '';
+  }
+  return normalized;
+}
+
+function hasAdmin() {
+  return Object.values(authState.users).some((user) => user.role === 'admin');
+}
+
+function ensureUserRecord(userId) {
+  const normalizedUserId = normalizeUserId(userId);
+  if (!normalizedUserId) return null;
+
+  if (!Object.hasOwn(authState.users, normalizedUserId)) {
+    authState.users[normalizedUserId] = {
+      role: 'user',
+      proExpiresAt: null,
+      proPermanent: false,
+      generationUsage: { month: getCurrentMonthKey(), count: 0 },
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  const userRecord = authState.users[normalizedUserId];
+  if (ADMIN_USER_IDS.has(normalizedUserId) && userRecord.role !== 'admin') {
+    userRecord.role = 'admin';
+  } else if (!hasAdmin()) {
+    userRecord.role = 'admin';
+  }
+
+  saveAuthState();
+  return userRecord;
+}
+
+function getMonthlyGenerationLimit(role, userRecord) {
+  if (role === 'admin') return null;
+  return getPlanForUser(userRecord).isPro ? PRO_GENERATE_MONTHLY_LIMIT : USER_GENERATE_MONTHLY_LIMIT;
+}
+
+function normalizeGenerationUsage(record) {
+  const month = getCurrentMonthKey();
+  const usage = record.generationUsage && typeof record.generationUsage === 'object'
+    ? record.generationUsage
+    : { month, count: 0 };
+  if (usage.month !== month) {
+    record.generationUsage = { month, count: 0 };
+    saveAuthState();
+    return record.generationUsage;
+  }
+  if (!Number.isFinite(Number(usage.count)) || Number(usage.count) < 0) {
+    record.generationUsage = { month, count: 0 };
+    saveAuthState();
+    return record.generationUsage;
+  }
+  return usage;
+}
+
+function addMonthsSafe(date, months) {
+  const base = new Date(date);
+  const day = base.getUTCDate();
+  base.setUTCDate(1);
+  base.setUTCMonth(base.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+  base.setUTCDate(Math.min(day, lastDay));
+  return base;
+}
+
+function getGenerationStatus(role, record) {
+  const monthlyLimit = getMonthlyGenerationLimit(role, record);
+  const usage = normalizeGenerationUsage(record);
+  return {
+    monthlyLimit,
+    monthlyUsed: usage.count,
+    monthlyRemaining: monthlyLimit === null ? null : Math.max(0, monthlyLimit - usage.count),
+    month: usage.month,
+  };
+}
+
+function consumeGenerationQuota(role, record) {
+  const monthlyLimit = getMonthlyGenerationLimit(role, record);
+  if (monthlyLimit === null) {
+    return { allowed: true, status: getGenerationStatus(role, record) };
+  }
+  const usage = normalizeGenerationUsage(record);
+  if (usage.count >= monthlyLimit) {
+    return { allowed: false, status: getGenerationStatus(role, record) };
+  }
+  usage.count += 1;
+  record.generationUsage = usage;
+  saveAuthState();
+  return { allowed: true, status: getGenerationStatus(role, record) };
+}
+
+function makeProKey() {
+  // Avoid ambiguous characters (I/O/1/0) so admins and users can read keys reliably.
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const randomChunk = () =>
+    Array.from({ length: 6 }, () => alphabet[crypto.randomInt(0, alphabet.length)]).join('');
+  let key = '';
+  for (let attempt = 0; attempt < MAX_PRO_KEY_GENERATION_ATTEMPTS; attempt += 1) {
+    key = `PRO-${randomChunk()}-${randomChunk()}-${randomChunk()}`;
+    if (!Object.hasOwn(authState.proKeys, key)) {
+      return key;
+    }
+  }
+  throw new Error('Unable to generate a unique Pro key. Please try again.');
+}
 
 // Rate limiters
 const readLimiter = rateLimit({
@@ -55,19 +252,19 @@ app.get('/clerk.browser.js', readLimiter, (req, res) => {
 const adminGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: ADMIN_GENERATE_LIMIT,
-  keyGenerator: (req) => getAuth(req).userId || req.ip,
+  keyGenerator: (req) => getAuth(req).userId || ipKeyGenerator(req),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Admin generation limit reached. Please try again later.' },
 });
 
-const userGenerateLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: USER_GENERATE_LIMIT,
-  keyGenerator: (req) => getAuth(req).userId || req.ip,
+const adminPanelLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  keyGenerator: (req) => getAuth(req).userId || ipKeyGenerator(req),
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'User generation limit reached. Please try again later.' },
+  message: { error: 'Too many admin requests. Please try again later.' },
 });
 
 // Convert a topic string into a URL-safe slug
@@ -109,7 +306,12 @@ function requireAuth(allowedRoles = []) {
       return res.redirect('/');
     }
 
-    const role = ADMIN_USER_IDS.has(auth.userId) ? 'admin' : 'user';
+    const userRecord = ensureUserRecord(auth.userId);
+    if (!userRecord) {
+      return res.status(400).json({ error: 'Invalid user.' });
+    }
+
+    const role = userRecord.role;
     if (allowedRoles.length > 0 && !allowedRoles.includes(role)) {
       return res.status(403).json({ error: 'Insufficient permissions.' });
     }
@@ -117,7 +319,9 @@ function requireAuth(allowedRoles = []) {
     req.user = {
       userId: auth.userId,
       role,
+      plan: getPlanForUser(userRecord),
     };
+    req.userRecord = userRecord;
     return next();
   };
 }
@@ -154,7 +358,7 @@ function generationLimiterByRole(req, res, next) {
   if (req.user.role === 'admin') {
     return adminGenerateLimiter(req, res, next);
   }
-  return userGenerateLimiter(req, res, next);
+  return next();
 }
 
 app.get('/api/auth/config', (req, res) => {
@@ -168,6 +372,115 @@ app.get('/api/auth/me', requireAuth(), (req, res) => {
   return res.json({
     userId: req.user.userId,
     role: req.user.role,
+    plan: req.user.plan,
+    generation: getGenerationStatus(req.user.role, req.userRecord),
+  });
+});
+
+app.get('/admin', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
+  return res.sendFile(path.join(__dirname, 'admin-panel.html'));
+});
+
+app.get('/api/admin/overview', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
+  const users = Object.entries(authState.users).map(([userId, user]) => ({
+    userId,
+    role: user.role,
+    plan: getPlanForUser(user),
+    generation: getGenerationStatus(user.role, user),
+    createdAt: user.createdAt || null,
+  }));
+  const proKeys = Object.values(authState.proKeys).sort((a, b) => {
+    const aTime = Date.parse(a.createdAt || '') || 0;
+    const bTime = Date.parse(b.createdAt || '') || 0;
+    return bTime - aTime;
+  });
+  return res.json({ users, proKeys });
+});
+
+app.post('/api/admin/users/promote', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
+  const targetUserId = normalizeUserId(req.body && req.body.userId);
+  if (!targetUserId) {
+    return res.status(400).json({ error: 'Valid userId is required.' });
+  }
+  const target = ensureUserRecord(targetUserId);
+  if (!target) {
+    return res.status(400).json({ error: 'Valid userId is required.' });
+  }
+  target.role = 'admin';
+  saveAuthState();
+  return res.json({ userId: targetUserId, role: target.role });
+});
+
+app.post('/api/admin/pro-keys', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
+  const requestedDuration = String((req.body && req.body.duration) || 'monthly').toLowerCase();
+  const duration = ['monthly', 'annual', 'permanent'].includes(requestedDuration)
+    ? requestedDuration
+    : null;
+  if (!duration) {
+    return res.status(400).json({ error: 'Duration must be monthly, annual, or permanent.' });
+  }
+
+  let key = '';
+  try {
+    key = makeProKey();
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not generate a unique Pro key right now.' });
+  }
+  const createdAt = new Date().toISOString();
+  authState.proKeys[key] = {
+    key,
+    duration,
+    createdBy: req.user.userId,
+    createdAt,
+    redeemedBy: null,
+    redeemedAt: null,
+  };
+  saveAuthState();
+  return res.status(201).json(authState.proKeys[key]);
+});
+
+app.post('/api/pro/redeem', readLimiter, requireAuth(), (req, res) => {
+  const key = String((req.body && req.body.key) || '').trim().toUpperCase();
+  if (!key) {
+    return res.status(400).json({ error: 'Key is required.' });
+  }
+  const keyRecord = Object.hasOwn(authState.proKeys, key) ? authState.proKeys[key] : null;
+  if (!keyRecord) {
+    return res.status(404).json({ error: 'Invalid key.' });
+  }
+  if (keyRecord.redeemedBy) {
+    return res.status(409).json({ error: 'This key has already been redeemed.' });
+  }
+
+  const userRecord = req.userRecord;
+  if (userRecord.proPermanent) {
+    return res.status(409).json({ error: 'You already have a permanent Pro plan.' });
+  }
+
+  if (keyRecord.duration === 'permanent') {
+    userRecord.proPermanent = true;
+    userRecord.proExpiresAt = null;
+  } else {
+    const now = Date.now();
+    const current = Date.parse(userRecord.proExpiresAt || '');
+    const base = Number.isFinite(current) && current > now ? new Date(current) : new Date();
+    const expiry = keyRecord.duration === 'annual' ? addMonthsSafe(base, 12) : addMonthsSafe(base, 1);
+    userRecord.proExpiresAt = expiry.toISOString();
+  }
+
+  keyRecord.redeemedBy = req.user.userId;
+  keyRecord.redeemedAt = new Date().toISOString();
+  saveAuthState();
+
+  return res.json({
+    success: true,
+    plan: getPlanForUser(userRecord),
+    generation: getGenerationStatus(userRecord.role, userRecord),
+    redeemedKey: {
+      key: keyRecord.key,
+      duration: keyRecord.duration,
+      redeemedAt: keyRecord.redeemedAt,
+    },
   });
 });
 
@@ -209,7 +522,15 @@ app.post('/api/generate', requireAuth(), generationLimiterByRole, async (req, re
 
   // Return cached page if it already exists
   if (fs.existsSync(safe.resolved)) {
-    return res.json({ slug: safe.sanitized, cached: true });
+    return res.json({ slug: safe.sanitized, cached: true, generation: getGenerationStatus(req.user.role, req.userRecord) });
+  }
+
+  const quota = consumeGenerationQuota(req.user.role, req.userRecord);
+  if (!quota.allowed) {
+    return res.status(429).json({
+      error: 'Monthly generation limit reached for your plan.',
+      generation: quota.status,
+    });
   }
 
   if (!API_KEY) {
@@ -234,7 +555,7 @@ Do NOT include any preamble, disclaimers, or meta-commentary — output ONLY the
     const fullContent = banner + text;
 
     fs.writeFileSync(safe.resolved, fullContent, 'utf8');
-    return res.json({ slug: safe.sanitized, cached: false, modelUsed });
+    return res.json({ slug: safe.sanitized, cached: false, modelUsed, generation: quota.status });
   } catch (err) {
     console.error('Gemini API error:', err);
     return res.status(500).json({ error: 'Failed to generate article. ' + (err.message || '') });
