@@ -132,14 +132,15 @@ body.landing {
   margin-bottom: 0.75rem;
 }
 
-.login-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+.auth-copy {
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
 }
 
-.login-fields {
-  display: grid;
+.auth-actions {
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
 }
 

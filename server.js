@@ -2,11 +2,11 @@
 
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { clerkMiddleware, getAuth } = require('@clerk/express');
 const { marked } = require('marked');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,10 +15,13 @@ const WIKI_DIR = path.join(__dirname, 'wiki-pages');
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
-const SESSION_COOKIE = 'wiki_auth';
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const CLERK_PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY || '';
+const ADMIN_USER_IDS = new Set(
+  (process.env.ADMIN_USER_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
 const ADMIN_GENERATE_LIMIT = Number(process.env.ADMIN_GENERATE_LIMIT || 20);
 const USER_GENERATE_LIMIT = Number(process.env.USER_GENERATE_LIMIT || 5);
 
@@ -28,6 +31,7 @@ if (!fs.existsSync(WIKI_DIR)) {
 }
 
 app.use(express.json());
+app.use(clerkMiddleware());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Rate limiters
@@ -42,7 +46,7 @@ const readLimiter = rateLimit({
 const adminGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: ADMIN_GENERATE_LIMIT,
-  keyGenerator: (req) => req.user.username,
+  keyGenerator: (req) => req.user.userId,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Admin generation limit reached. Please try again later.' },
@@ -51,24 +55,11 @@ const adminGenerateLimiter = rateLimit({
 const userGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: USER_GENERATE_LIMIT,
-  keyGenerator: (req) => req.user.username,
+  keyGenerator: (req) => req.user.userId,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'User generation limit reached. Please try again later.' },
 });
-
-const authLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many authentication requests. Please try again later.' },
-});
-
-const adminAccount = createAccountRecord('admin', ADMIN_USERNAME, ADMIN_PASSWORD);
-const userAccounts = new Map();
-
-const sessions = new Map();
 
 // Convert a topic string into a URL-safe slug
 function slugify(text) {
@@ -99,84 +90,25 @@ function extractTitle(content, fallback) {
   return match ? match[1] : fallback;
 }
 
-function createAccountRecord(role, username, password) {
-  const salt = crypto.randomBytes(16);
-  return {
-    role,
-    username,
-    salt,
-    hash: crypto.scryptSync(password, salt, 64),
-  };
-}
-
-function parseCookies(req) {
-  const header = req.headers.cookie || '';
-  return header.split(';').reduce((acc, chunk) => {
-    const idx = chunk.indexOf('=');
-    if (idx === -1) return acc;
-    const key = chunk.slice(0, idx).trim();
-    const value = chunk.slice(idx + 1).trim();
-    if (key) acc[key] = decodeURIComponent(value);
-    return acc;
-  }, {});
-}
-
-function authenticateUser(username, password) {
-  if (username === adminAccount.username) {
-    const attempted = crypto.scryptSync(password, adminAccount.salt, 64);
-    if (crypto.timingSafeEqual(attempted, adminAccount.hash)) {
-      return { username: adminAccount.username, role: adminAccount.role };
-    }
-    return null;
-  }
-
-  const user = userAccounts.get(username);
-  if (!user) return null;
-
-  const attempted = crypto.scryptSync(password, user.salt, 64);
-  if (crypto.timingSafeEqual(attempted, user.hash)) {
-    return { username, role: 'user' };
-  }
-
-  return null;
-}
-
-function issueSession(user) {
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + SESSION_TTL_MS;
-  sessions.set(token, { ...user, expiresAt });
-  return token;
-}
-
-function getSessionFromRequest(req) {
-  const cookies = parseCookies(req);
-  const token = cookies[SESSION_COOKIE];
-  if (!token) return null;
-  const session = sessions.get(token);
-  if (!session) return null;
-  if (session.expiresAt < Date.now()) {
-    sessions.delete(token);
-    return null;
-  }
-  return { token, user: { username: session.username, role: session.role } };
-}
-
 function requireAuth(allowedRoles = []) {
   return (req, res, next) => {
-    const session = getSessionFromRequest(req);
-    if (!session) {
+    const auth = getAuth(req);
+    if (!auth || !auth.userId) {
       if (req.path.startsWith('/api/')) {
         return res.status(401).json({ error: 'Authentication required.' });
       }
       return res.redirect('/');
     }
 
-    if (allowedRoles.length > 0 && !allowedRoles.includes(session.user.role)) {
+    const role = ADMIN_USER_IDS.has(auth.userId) ? 'admin' : 'user';
+    if (allowedRoles.length > 0 && !allowedRoles.includes(role)) {
       return res.status(403).json({ error: 'Insufficient permissions.' });
     }
 
-    req.user = session.user;
-    req.sessionToken = session.token;
+    req.user = {
+      userId: auth.userId,
+      role,
+    };
     return next();
   };
 }
@@ -212,73 +144,18 @@ function generationLimiterByRole(req, res, next) {
   return userGenerateLimiter(req, res, next);
 }
 
-app.post('/api/auth/signup', authLimiter, (req, res) => {
-  const username = req.body && req.body.username ? String(req.body.username).trim() : '';
-  const password = req.body && req.body.password ? String(req.body.password) : '';
-
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required.' });
+app.get('/api/auth/config', (req, res) => {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return res.status(500).json({ error: 'CLERK_PUBLISHABLE_KEY environment variable is not set.' });
   }
-
-  if (!/^[a-zA-Z0-9_-]{3,30}$/.test(username)) {
-    return res.status(400).json({ error: 'Username must be 3-30 characters and use only letters, numbers, "_" or "-".' });
-  }
-
-  if (password.length < 8 || password.length > 200) {
-    return res.status(400).json({ error: 'Password must be between 8 and 200 characters.' });
-  }
-
-  if (username === adminAccount.username || userAccounts.has(username)) {
-    return res.status(409).json({ error: 'Username is already taken.' });
-  }
-
-  userAccounts.set(username, createAccountRecord('user', username, password));
-  return res.status(201).json({ username, role: 'user' });
-});
-
-app.post('/api/auth/login', authLimiter, (req, res) => {
-  const username = req.body && req.body.username ? String(req.body.username).trim() : '';
-  const password = req.body && req.body.password ? String(req.body.password) : '';
-
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required.' });
-  }
-
-  if (username.length > 100 || password.length > 200) {
-    return res.status(400).json({ error: 'Invalid username or password length.' });
-  }
-
-  const user = authenticateUser(username, password);
-  if (!user) {
-    return res.status(401).json({ error: 'Invalid username or password.' });
-  }
-
-  const token = issueSession(user);
-  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  const cookieParts = [
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
-    'HttpOnly',
-    'Path=/',
-    'SameSite=Lax',
-    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
-  ];
-  if (secure) cookieParts.push('Secure');
-  res.setHeader('Set-Cookie', cookieParts.join('; '));
-
-  return res.json({
-    username: user.username,
-    role: user.role,
-  });
-});
-
-app.post('/api/auth/logout', requireAuth(), (req, res) => {
-  if (req.sessionToken) sessions.delete(req.sessionToken);
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
-  return res.status(204).send();
+  return res.json({ publishableKey: CLERK_PUBLISHABLE_KEY });
 });
 
 app.get('/api/auth/me', requireAuth(), (req, res) => {
-  return res.json(req.user);
+  return res.json({
+    userId: req.user.userId,
+    role: req.user.role,
+  });
 });
 
 // List all saved wiki pages

@@ -17,32 +17,13 @@
       <p class="hero-subtitle">An AI-generated encyclopedia powered by Gemma. Search any topic and get a Wikipedia-style article instantly.</p>
 
       <section class="auth-panel" id="auth-panel">
-        <h2 class="auth-heading" id="auth-heading">Sign in</h2>
-        <form id="login-form" class="login-form" autocomplete="off">
-          <div class="login-fields">
-            <input
-              type="text"
-              id="username-input"
-              class="search-input"
-              placeholder="Username"
-              maxlength="100"
-              required
-              aria-label="Username"
-            />
-            <input
-              type="password"
-              id="password-input"
-              class="search-input"
-              placeholder="Password"
-              maxlength="200"
-              required
-              aria-label="Password"
-            />
-          </div>
-          <button type="submit" class="search-btn auth-btn" id="login-btn">Sign in</button>
-          <button type="button" class="auth-toggle-btn" id="auth-toggle-btn">Need an account? Sign up</button>
-          <p id="login-error-msg" class="error-msg hidden" role="alert"></p>
-        </form>
+        <h2 class="auth-heading">Authentication required</h2>
+        <p class="auth-copy">Sign in or create an account with Clerk to generate and view pages.</p>
+        <div class="auth-actions">
+          <button type="button" class="search-btn auth-btn" id="sign-in-btn">Sign in</button>
+          <button type="button" class="auth-toggle-btn" id="sign-up-btn">Sign up</button>
+        </div>
+        <p id="login-error-msg" class="error-msg hidden" role="alert"></p>
       </section>
 
       <section class="session-panel hidden" id="session-panel">
@@ -85,6 +66,7 @@
     <p>Powered by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
   </footer>
 
+  <script src="https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js"></script>
   <script>
     const form = document.getElementById('search-form');
     const input = document.getElementById('search-input');
@@ -96,19 +78,15 @@
     const pagesSection = document.getElementById('pages-section');
     const authPanel = document.getElementById('auth-panel');
     const sessionPanel = document.getElementById('session-panel');
-    const loginForm = document.getElementById('login-form');
-    const authHeading = document.getElementById('auth-heading');
-    const usernameInput = document.getElementById('username-input');
-    const passwordInput = document.getElementById('password-input');
     const loginErrorMsg = document.getElementById('login-error-msg');
-    const loginBtn = document.getElementById('login-btn');
-    const authToggleBtn = document.getElementById('auth-toggle-btn');
+    const signInBtn = document.getElementById('sign-in-btn');
+    const signUpBtn = document.getElementById('sign-up-btn');
     const sessionUsername = document.getElementById('session-username');
     const sessionRole = document.getElementById('session-role');
     const logoutBtn = document.getElementById('logout-btn');
 
     let currentUser = null;
-    let authMode = 'login';
+    let clerk = null;
 
     function setLoading(loading) {
       btn.disabled = loading;
@@ -161,15 +139,6 @@
       btnText.textContent = 'Generate';
     }
 
-    function setAuthMode(mode) {
-      authMode = mode;
-      const isLogin = authMode === 'login';
-      authHeading.textContent = isLogin ? 'Sign in' : 'Sign up';
-      loginBtn.textContent = isLogin ? 'Sign in' : 'Sign up';
-      authToggleBtn.textContent = isLogin ? 'Need an account? Sign up' : 'Already have an account? Sign in';
-      clearLoginError();
-    }
-
     async function loadPages() {
       try {
         const res = await fetch('/api/pages');
@@ -205,79 +174,55 @@
     }
 
     async function checkSession() {
+      if (!clerk) {
+        setAuthState(null);
+        return;
+      }
       try {
         const res = await fetch('/api/auth/me');
         if (!res.ok) {
           setAuthState(null);
           return;
         }
-        const user = await res.json();
-        setAuthState(user);
+        const authData = await res.json();
+        const preferredName =
+          clerk.user?.username ||
+          clerk.user?.primaryEmailAddress?.emailAddress ||
+          clerk.user?.fullName ||
+          authData.userId;
+        setAuthState({
+          username: preferredName,
+          role: authData.role,
+        });
         await loadPages();
       } catch (_) {
         setAuthState(null);
       }
     }
 
-    loginForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
+    signInBtn.addEventListener('click', async () => {
       clearLoginError();
-      const username = usernameInput.value.trim();
-      const password = passwordInput.value;
-      if (!username || !password) {
-        showLoginError('Username and password are required.');
-        return;
-      }
-
-      loginBtn.disabled = true;
-      try {
-        if (authMode === 'signup') {
-          const signupRes = await fetch('/api/auth/signup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password }),
-          });
-          const signupData = await signupRes.json().catch(() => ({}));
-          if (!signupRes.ok) {
-            showLoginError(signupData.error || 'Sign up failed.');
-            return;
-          }
-        }
-
-        const res = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          showLoginError(data.error || 'Sign in failed.');
-          return;
-        }
-
-        usernameInput.value = '';
-        passwordInput.value = '';
-        setAuthState(data);
-        await loadPages();
-      } catch (_) {
-        showLoginError('Network error. Please check your connection and try again.');
-      } finally {
-        loginBtn.disabled = false;
-      }
+      if (!clerk) return;
+      await clerk.redirectToSignIn({ afterSignInUrl: window.location.href });
     });
 
-    authToggleBtn.addEventListener('click', () => {
-      setAuthMode(authMode === 'login' ? 'signup' : 'login');
+    signUpBtn.addEventListener('click', async () => {
+      clearLoginError();
+      if (!clerk) return;
+      await clerk.redirectToSignUp({ afterSignUpUrl: window.location.href });
     });
 
     logoutBtn.addEventListener('click', async () => {
+      if (!clerk) {
+        setAuthState(null);
+        return;
+      }
       try {
-        await fetch('/api/auth/logout', { method: 'POST' });
+        await clerk.signOut({ redirectUrl: window.location.href });
       } catch (_) {
         // ignore network errors and clear local UI state
-      } finally {
-        setAuthState(null);
       }
+      setAuthState(null);
     });
 
     form.addEventListener('submit', async (e) => {
@@ -315,8 +260,32 @@
       }
     });
 
-    setAuthMode('login');
-    checkSession();
+    async function initClerk() {
+      try {
+        const configRes = await fetch('/api/auth/config');
+        const config = await configRes.json().catch(() => ({}));
+        if (!configRes.ok || !config.publishableKey) {
+          showLoginError(config.error || 'Authentication is not configured.');
+          setAuthState(null);
+          return;
+        }
+
+        if (!window.Clerk) {
+          showLoginError('Failed to load Clerk SDK.');
+          setAuthState(null);
+          return;
+        }
+
+        clerk = window.Clerk;
+        await clerk.load({ publishableKey: config.publishableKey });
+        await checkSession();
+      } catch (_) {
+        showLoginError('Failed to initialize authentication.');
+        setAuthState(null);
+      }
+    }
+
+    initClerk();
   </script>
 </body>
 </html>
