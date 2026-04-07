@@ -32,7 +32,7 @@
       <section class="pro-panel">
         <h2 class="auth-heading">Promote user to admin</h2>
         <form id="promote-user-form" class="pro-redeem-form">
-          <input type="text" id="promote-user-id" class="search-input" maxlength="128" pattern="[a-zA-Z0-9_-]+" placeholder="Clerk user ID (e.g., user_123)" aria-label="User ID to promote" required />
+          <input type="text" id="promote-user-id" class="search-input" maxlength="128" pattern="^[a-zA-Z0-9_-]+$" placeholder="Clerk user ID (e.g., user_123)" aria-label="User ID to promote" required />
           <button type="submit" class="search-btn">Promote</button>
         </form>
         <p id="promote-msg" class="error-msg hidden" role="status"></p>
@@ -76,6 +76,12 @@
       el.classList.toggle('error-msg', isError);
     }
 
+    function escapeHtml(value) {
+      const div = document.createElement('div');
+      div.appendChild(document.createTextNode(String(value ?? '')));
+      return div.innerHTML;
+    }
+
     function formatPlan(user) {
       if (user.role === 'admin') return 'admin';
       if (user.plan?.isPermanent) return 'pro (permanent)';
@@ -105,7 +111,7 @@
 
         usersList.innerHTML = users.length
           ? users.map((user) => (
-              `<li class="page-item"><span class="page-link">${user.userId} — ${user.role} — ${formatPlan(user)} — ${formatGeneration(user)}</span></li>`
+              `<li class="page-item"><span class="page-link">${escapeHtml(user.userId)} — ${escapeHtml(user.role)} — ${escapeHtml(formatPlan(user))} — ${escapeHtml(formatGeneration(user))}</span></li>`
             )).join('')
           : '<li class="pages-empty">No users found yet.</li>';
 
@@ -114,7 +120,7 @@
               const redeemed = key.redeemedBy
                 ? `redeemed by ${key.redeemedBy}`
                 : 'not redeemed';
-              return `<li class="page-item"><span class="page-link">${key.key} — ${key.duration} — ${redeemed}</span></li>`;
+              return `<li class="page-item"><span class="page-link">${escapeHtml(key.key)} — ${escapeHtml(key.duration)} — ${escapeHtml(redeemed)}</span></li>`;
             }).join('')
           : '<li class="pages-empty">No Pro keys generated yet.</li>';
       } catch (err) {

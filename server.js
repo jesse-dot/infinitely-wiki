@@ -185,6 +185,16 @@ function normalizeGenerationUsage(record) {
   return usage;
 }
 
+function addMonthsSafe(date, months) {
+  const base = new Date(date);
+  const day = base.getUTCDate();
+  base.setUTCDate(1);
+  base.setUTCMonth(base.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+  base.setUTCDate(Math.min(day, lastDay));
+  return base;
+}
+
 function getGenerationStatus(role, record) {
   const monthlyLimit = getMonthlyGenerationLimit(role, record);
   const usage = normalizeGenerationUsage(record);
@@ -393,6 +403,9 @@ app.post('/api/admin/users/promote', adminPanelLimiter, requireAuth(['admin']), 
     return res.status(400).json({ error: 'Valid userId is required.' });
   }
   const target = ensureUserRecord(targetUserId);
+  if (!target) {
+    return res.status(400).json({ error: 'Valid userId is required.' });
+  }
   target.role = 'admin';
   saveAuthState();
   return res.json({ userId: targetUserId, role: target.role });
@@ -451,12 +464,8 @@ app.post('/api/pro/redeem', readLimiter, requireAuth(), (req, res) => {
     const now = Date.now();
     const current = Date.parse(userRecord.proExpiresAt || '');
     const base = Number.isFinite(current) && current > now ? new Date(current) : new Date();
-    if (keyRecord.duration === 'annual') {
-      base.setFullYear(base.getFullYear() + 1);
-    } else {
-      base.setMonth(base.getMonth() + 1);
-    }
-    userRecord.proExpiresAt = base.toISOString();
+    const expiry = keyRecord.duration === 'annual' ? addMonthsSafe(base, 12) : addMonthsSafe(base, 1);
+    userRecord.proExpiresAt = expiry.toISOString();
   }
 
   keyRecord.redeemedBy = req.user.userId;
