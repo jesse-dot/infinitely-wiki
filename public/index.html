@@ -30,8 +30,29 @@
         <p class="session-text">
           Signed in as <strong id="session-username"></strong>
           <span class="role-badge" id="session-role"></span>
+          <span class="plan-badge" id="session-plan"></span>
         </p>
-        <button type="button" class="logout-btn" id="logout-btn">Log out</button>
+        <div class="session-actions">
+          <a href="/admin" class="admin-link hidden" id="admin-link">Admin Panel</a>
+          <button type="button" class="logout-btn" id="logout-btn">Log out</button>
+        </div>
+      </section>
+
+      <section class="pro-panel hidden" id="pro-panel">
+        <h2 class="auth-heading">Redeem Pro key</h2>
+        <form id="pro-redeem-form" class="pro-redeem-form">
+          <input
+            type="text"
+            id="pro-key-input"
+            class="search-input"
+            placeholder="Enter Pro key"
+            maxlength="64"
+            aria-label="Pro key"
+            required
+          />
+          <button type="submit" class="search-btn">Redeem</button>
+        </form>
+        <p id="pro-msg" class="error-msg hidden" role="status"></p>
       </section>
 
       <form id="search-form" class="search-form hidden" autocomplete="off">
@@ -83,7 +104,13 @@
     const signUpBtn = document.getElementById('sign-up-btn');
     const sessionUsername = document.getElementById('session-username');
     const sessionRole = document.getElementById('session-role');
+    const sessionPlan = document.getElementById('session-plan');
+    const adminLink = document.getElementById('admin-link');
     const logoutBtn = document.getElementById('logout-btn');
+    const proPanel = document.getElementById('pro-panel');
+    const proRedeemForm = document.getElementById('pro-redeem-form');
+    const proKeyInput = document.getElementById('pro-key-input');
+    const proMsg = document.getElementById('pro-msg');
     // Keep UI labels compact while still showing meaningful identity context.
     const MAX_DISPLAY_NAME_LENGTH = 100;
 
@@ -117,6 +144,20 @@
       loginErrorMsg.classList.add('hidden');
     }
 
+    function showProMessage(msg, isError = false) {
+      proMsg.textContent = msg;
+      proMsg.classList.remove('hidden');
+      proMsg.classList.toggle('success-msg', !isError);
+      proMsg.classList.toggle('error-msg', isError);
+    }
+
+    function clearProMessage() {
+      proMsg.textContent = '';
+      proMsg.classList.add('hidden');
+      proMsg.classList.remove('success-msg');
+      proMsg.classList.add('error-msg');
+    }
+
     function setAuthState(user) {
       currentUser = user || null;
       const isAuthenticated = !!currentUser;
@@ -124,17 +165,29 @@
       sessionPanel.classList.toggle('hidden', !isAuthenticated);
       form.classList.toggle('hidden', !isAuthenticated);
       pagesSection.classList.toggle('hidden', !isAuthenticated);
+      proPanel.classList.toggle('hidden', !isAuthenticated);
 
       if (!isAuthenticated) {
         form.reset();
+        proRedeemForm.reset();
         input.disabled = true;
         btn.disabled = true;
+        adminLink.classList.add('hidden');
+        sessionPlan.textContent = '';
+        clearProMessage();
         pagesList.innerHTML = '<li class="pages-empty">Sign in or sign up to generate and view articles.</li>';
         return;
       }
 
       sessionUsername.textContent = currentUser.username;
       sessionRole.textContent = currentUser.role;
+      const planName = currentUser.plan?.name || 'free';
+      const generation = currentUser.generation || {};
+      const remainingText = generation.monthlyRemaining === null
+        ? 'Unlimited generations'
+        : `${generation.monthlyRemaining} generations left this month`;
+      sessionPlan.textContent = `${planName.toUpperCase()} · ${remainingText}`;
+      adminLink.classList.toggle('hidden', currentUser.role !== 'admin');
       input.disabled = false;
       btn.disabled = false;
       input.placeholder = 'Search any topic…';
@@ -201,6 +254,8 @@
         setAuthState({
           username: safeDisplayName(preferredName),
           role: authData.role,
+          plan: authData.plan,
+          generation: authData.generation,
         });
         await loadPages();
       } catch (err) {
@@ -262,11 +317,41 @@
           showError(data.error || 'Something went wrong. Please try again.');
           return;
         }
+        if (data.generation) {
+          currentUser.generation = data.generation;
+          setAuthState(currentUser);
+        }
         window.location.href = `/wiki/${encodeURIComponent(data.slug)}`;
       } catch (err) {
         showError('Network error. Please check your connection and try again.');
       } finally {
         setLoading(false);
+      }
+    });
+
+    proRedeemForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearProMessage();
+      const key = proKeyInput.value.trim();
+      if (!key) return;
+      try {
+        const res = await fetch('/api/pro/redeem', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showProMessage(data.error || 'Could not redeem key.', true);
+          return;
+        }
+        currentUser.plan = data.plan;
+        currentUser.generation = data.generation;
+        setAuthState(currentUser);
+        proRedeemForm.reset();
+        showProMessage('Pro key redeemed successfully.');
+      } catch (err) {
+        showProMessage('Network error while redeeming key.', true);
       }
     });
 

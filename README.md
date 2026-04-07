@@ -9,6 +9,10 @@ An AI-powered encyclopedia that generates Wikipedia-style articles on any topic 
 - ⚠️ Every article displays an AI-generated content warning banner at the top
 - 💾 Generated articles are saved to disk and served on subsequent visits without re-generating
 - 🗂️ Landing page lists all previously generated articles
+- 🛡️ First authenticated user is auto-assigned Admin
+- 🧰 Admin Panel for promoting users to admin and generating Pro keys
+- 🔑 Pro plan keys can be generated as monthly, annual, or permanent and redeemed by users
+- 📊 Monthly generation quotas by plan (Free vs Pro), plus higher admin request throughput
 
 ## Prerequisites
 
@@ -28,7 +32,7 @@ export GEMINI_API_KEY=your_api_key_here
 export CLERK_SECRET_KEY=your_clerk_secret_key
 export CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
 
-# Comma-separated Clerk user IDs that should be Admins
+# Optional: comma-separated Clerk user IDs that should always be Admins
 export ADMIN_USER_IDS=user_abc123,user_def456
 
 # Start the server
@@ -48,11 +52,18 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 ### Accounts and Permissions
 
 - Authentication is handled by **Clerk** (sign up and sign in)
-- **Admin account**: any Clerk user whose ID appears in `ADMIN_USER_IDS`
-- **User account**: any other signed-in Clerk user (must sign up before first use)
-- Generation rate limits are role-based:
-  - Admin: `20` requests/minute by default
-  - User: `5` requests/minute by default
+- **Admin account**:
+  - The first authenticated user is automatically assigned admin
+  - Existing admins can promote other users to admin in `/admin`
+  - Any Clerk user in `ADMIN_USER_IDS` is always treated as admin
+- **Pro plan**:
+  - Admins generate keys in `/admin`
+  - Key types: `monthly` (default), `annual`, `permanent`
+  - Users redeem keys from the home page
+- Generation limits:
+  - Admin: `50` requests/minute by default
+  - Free users: `10` generations/month
+  - Pro users: `100` generations/month
 
 ## Environment Variables
 
@@ -65,8 +76,9 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 | `ADMIN_USER_IDS` | Comma-separated Clerk user IDs treated as Admin accounts |
 | `GEMMA_PRIMARY_MODEL` | Primary generation model (default: `gemma-4-27b-it`) |
 | `GEMMA_FALLBACK_MODEL` | Fallback model if primary fails (default: `gemma-3-27b-it`) |
-| `ADMIN_GENERATE_LIMIT` | Admin generation requests per minute (default: `20`) |
-| `USER_GENERATE_LIMIT` | User generation requests per minute (default: `5`) |
+| `ADMIN_GENERATE_LIMIT` | Admin generation requests per minute (default: `50`) |
+| `USER_GENERATE_MONTHLY_LIMIT` | Free user generations per month (default: `10`) |
+| `PRO_GENERATE_MONTHLY_LIMIT` | Pro user generations per month (default: `100`) |
 | `PORT` | Port to listen on (default: `3000`) |
 | `HOST` | Host address to bind to (default: `0.0.0.0`) |
 
