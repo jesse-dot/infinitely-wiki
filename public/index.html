@@ -17,7 +17,7 @@
       <p class="hero-subtitle">An AI-generated encyclopedia powered by Gemma. Search any topic and get a Wikipedia-style article instantly.</p>
 
       <section class="auth-panel" id="auth-panel">
-        <h2 class="auth-heading">Sign in</h2>
+        <h2 class="auth-heading" id="auth-heading">Sign in</h2>
         <form id="login-form" class="login-form" autocomplete="off">
           <div class="login-fields">
             <input
@@ -40,6 +40,7 @@
             />
           </div>
           <button type="submit" class="search-btn auth-btn" id="login-btn">Sign in</button>
+          <button type="button" class="auth-toggle-btn" id="auth-toggle-btn">Need an account? Sign up</button>
           <p id="login-error-msg" class="error-msg hidden" role="alert"></p>
         </form>
       </section>
@@ -96,15 +97,18 @@
     const authPanel = document.getElementById('auth-panel');
     const sessionPanel = document.getElementById('session-panel');
     const loginForm = document.getElementById('login-form');
+    const authHeading = document.getElementById('auth-heading');
     const usernameInput = document.getElementById('username-input');
     const passwordInput = document.getElementById('password-input');
     const loginErrorMsg = document.getElementById('login-error-msg');
     const loginBtn = document.getElementById('login-btn');
+    const authToggleBtn = document.getElementById('auth-toggle-btn');
     const sessionUsername = document.getElementById('session-username');
     const sessionRole = document.getElementById('session-role');
     const logoutBtn = document.getElementById('logout-btn');
 
     let currentUser = null;
+    let authMode = 'login';
 
     function setLoading(loading) {
       btn.disabled = loading;
@@ -145,19 +149,25 @@
         form.reset();
         input.disabled = true;
         btn.disabled = true;
-        pagesList.innerHTML = '<li class="pages-empty">Sign in to view generated articles.</li>';
+        pagesList.innerHTML = '<li class="pages-empty">Sign in or sign up to generate and view articles.</li>';
         return;
       }
 
       sessionUsername.textContent = currentUser.username;
       sessionRole.textContent = currentUser.role;
-      const canGenerate = currentUser.role === 'admin';
-      input.disabled = !canGenerate;
-      btn.disabled = !canGenerate;
-      input.placeholder = canGenerate ? 'Search any topic…' : 'Only Admin accounts can generate new articles';
-      if (!canGenerate) {
-        btnText.textContent = 'Generate';
-      }
+      input.disabled = false;
+      btn.disabled = false;
+      input.placeholder = 'Search any topic…';
+      btnText.textContent = 'Generate';
+    }
+
+    function setAuthMode(mode) {
+      authMode = mode;
+      const isLogin = authMode === 'login';
+      authHeading.textContent = isLogin ? 'Sign in' : 'Sign up';
+      loginBtn.textContent = isLogin ? 'Sign in' : 'Sign up';
+      authToggleBtn.textContent = isLogin ? 'Need an account? Sign up' : 'Already have an account? Sign in';
+      clearLoginError();
     }
 
     async function loadPages() {
@@ -221,6 +231,19 @@
 
       loginBtn.disabled = true;
       try {
+        if (authMode === 'signup') {
+          const signupRes = await fetch('/api/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+          });
+          const signupData = await signupRes.json().catch(() => ({}));
+          if (!signupRes.ok) {
+            showLoginError(signupData.error || 'Sign up failed.');
+            return;
+          }
+        }
+
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -231,6 +254,7 @@
           showLoginError(data.error || 'Sign in failed.');
           return;
         }
+
         usernameInput.value = '';
         passwordInput.value = '';
         setAuthState(data);
@@ -240,6 +264,10 @@
       } finally {
         loginBtn.disabled = false;
       }
+    });
+
+    authToggleBtn.addEventListener('click', () => {
+      setAuthMode(authMode === 'login' ? 'signup' : 'login');
     });
 
     logoutBtn.addEventListener('click', async () => {
@@ -255,8 +283,8 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       clearError();
-      if (!currentUser || currentUser.role !== 'admin') {
-        showError('Only Admin accounts can generate new articles.');
+      if (!currentUser) {
+        showError('Please sign in.');
         return;
       }
       const topic = input.value.trim();
@@ -287,6 +315,7 @@
       }
     });
 
+    setAuthMode('login');
     checkSession();
   </script>
 </body>

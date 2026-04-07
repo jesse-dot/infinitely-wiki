@@ -19,8 +19,8 @@ const SESSION_COOKIE = 'wiki_auth';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const USER_USERNAME = process.env.USER_USERNAME || 'user';
-const USER_PASSWORD = process.env.USER_PASSWORD || 'user123';
+const ADMIN_GENERATE_LIMIT = Number(process.env.ADMIN_GENERATE_LIMIT || 20);
+const USER_GENERATE_LIMIT = Number(process.env.USER_GENERATE_LIMIT || 5);
 
 // Ensure wiki-pages directory exists
 if (!fs.existsSync(WIKI_DIR)) {
@@ -39,12 +39,22 @@ const readLimiter = rateLimit({
   message: { error: 'Too many requests. Please try again later.' },
 });
 
-const generateLimiter = rateLimit({
+const adminGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10,
+  max: ADMIN_GENERATE_LIMIT,
+  keyGenerator: (req) => req.user.username,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many generation requests. Please try again later.' },
+  message: { error: 'Admin generation limit reached. Please try again later.' },
+});
+
+const userGenerateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: USER_GENERATE_LIMIT,
+  keyGenerator: (req) => req.user.username,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'User generation limit reached. Please try again later.' },
 });
 
 const authLimiter = rateLimit({
@@ -55,10 +65,8 @@ const authLimiter = rateLimit({
   message: { error: 'Too many authentication requests. Please try again later.' },
 });
 
-const accountRecords = [
-  createAccountRecord('admin', ADMIN_USERNAME, ADMIN_PASSWORD),
-  createAccountRecord('user', USER_USERNAME, USER_PASSWORD),
-];
+const adminAccount = createAccountRecord('admin', ADMIN_USERNAME, ADMIN_PASSWORD);
+const userAccounts = new Map();
 
 const sessions = new Map();
 
@@ -114,14 +122,22 @@ function parseCookies(req) {
 }
 
 function authenticateUser(username, password) {
-  for (const account of accountRecords) {
-    if (account.username !== username) continue;
-    const attempted = crypto.scryptSync(password, account.salt, 64);
-    if (crypto.timingSafeEqual(attempted, account.hash)) {
-      return { username: account.username, role: account.role };
+  if (username === adminAccount.username) {
+    const attempted = crypto.scryptSync(password, adminAccount.salt, 64);
+    if (crypto.timingSafeEqual(attempted, adminAccount.hash)) {
+      return { username: adminAccount.username, role: adminAccount.role };
     }
     return null;
   }
+
+  const user = userAccounts.get(username);
+  if (!user) return null;
+
+  const attempted = crypto.scryptSync(password, user.salt, 64);
+  if (crypto.timingSafeEqual(attempted, user.hash)) {
+    return { username, role: 'user' };
+  }
+
   return null;
 }
 
@@ -189,6 +205,37 @@ async function generateArticleWithFallback(genAI, prompt) {
   }
 }
 
+function generationLimiterByRole(req, res, next) {
+  if (req.user.role === 'admin') {
+    return adminGenerateLimiter(req, res, next);
+  }
+  return userGenerateLimiter(req, res, next);
+}
+
+app.post('/api/auth/signup', authLimiter, (req, res) => {
+  const username = req.body && req.body.username ? String(req.body.username).trim() : '';
+  const password = req.body && req.body.password ? String(req.body.password) : '';
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required.' });
+  }
+
+  if (!/^[a-zA-Z0-9_-]{3,30}$/.test(username)) {
+    return res.status(400).json({ error: 'Username must be 3-30 characters and use only letters, numbers, "_" or "-".' });
+  }
+
+  if (password.length < 8 || password.length > 200) {
+    return res.status(400).json({ error: 'Password must be between 8 and 200 characters.' });
+  }
+
+  if (username === adminAccount.username || userAccounts.has(username)) {
+    return res.status(409).json({ error: 'Username is already taken.' });
+  }
+
+  userAccounts.set(username, createAccountRecord('user', username, password));
+  return res.status(201).json({ username, role: 'user' });
+});
+
 app.post('/api/auth/login', authLimiter, (req, res) => {
   const username = req.body && req.body.username ? String(req.body.username).trim() : '';
   const password = req.body && req.body.password ? String(req.body.password) : '';
@@ -251,7 +298,7 @@ app.get('/api/pages', readLimiter, requireAuth(), (req, res) => {
 });
 
 // Generate a new wiki page
-app.post('/api/generate', generateLimiter, requireAuth(['admin']), async (req, res) => {
+app.post('/api/generate', requireAuth(), generationLimiterByRole, async (req, res) => {
   const topic = (req.body && req.body.topic) ? String(req.body.topic).trim() : '';
   if (!topic) {
     return res.status(400).json({ error: 'Topic is required.' });

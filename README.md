@@ -27,8 +27,6 @@ export GEMINI_API_KEY=your_api_key_here
 # Configure accounts (recommended)
 export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD=change_me_admin
-export USER_USERNAME=user
-export USER_PASSWORD=change_me_user
 
 # Start the server
 npm start
@@ -47,11 +45,13 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 ### Accounts and Permissions
 
 - **Admin account**: can generate new articles and view existing pages
-- **User account**: can view existing pages
+- **User account**: must sign up first, then can generate and view pages
 - Sign in is required before using the app
-- If env vars are not set, local defaults are used:
+- If admin env vars are not set, local defaults are used for development:
   - Admin: `admin` / `admin123`
-  - User: `user` / `user123`
+- Generation rate limits are role-based:
+  - Admin: `20` requests/minute by default
+  - User: `5` requests/minute by default
 
 ## Environment Variables
 
@@ -63,8 +63,8 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 | `GEMMA_FALLBACK_MODEL` | Fallback model if primary fails (default: `gemma-3-27b-it`) |
 | `ADMIN_USERNAME` | Admin username |
 | `ADMIN_PASSWORD` | Admin password |
-| `USER_USERNAME` | User username |
-| `USER_PASSWORD` | User password |
+| `ADMIN_GENERATE_LIMIT` | Admin generation requests per minute (default: `20`) |
+| `USER_GENERATE_LIMIT` | User generation requests per minute (default: `5`) |
 | `PORT` | Port to listen on (default: `3000`) |
 | `HOST` | Host address to bind to (default: `0.0.0.0`) |
 
