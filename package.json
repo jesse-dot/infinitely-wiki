@@ -1,0 +1,28 @@
+{
+  "name": "infinitely-wiki",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jesse-dot/infinitely-wiki.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/jesse-dot/infinitely-wiki/issues"
+  },
+  "homepage": "https://github.com/jesse-dot/infinitely-wiki#readme",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.2",
+    "marked": "^18.0.0"
+  }
+}
