@@ -32,7 +32,7 @@
       <section class="pro-panel">
         <h2 class="auth-heading">Promote user to admin</h2>
         <form id="promote-user-form" class="pro-redeem-form">
-          <input type="text" id="promote-user-id" class="search-input" maxlength="128" placeholder="Clerk user ID (e.g., user_123)" required />
+          <input type="text" id="promote-user-id" class="search-input" maxlength="128" pattern="[a-zA-Z0-9_-]+" placeholder="Clerk user ID (e.g., user_123)" aria-label="User ID to promote" required />
           <button type="submit" class="search-btn">Promote</button>
         </form>
         <p id="promote-msg" class="error-msg hidden" role="status"></p>

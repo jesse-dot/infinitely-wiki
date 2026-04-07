@@ -7,6 +7,7 @@ const { marked } = require('marked');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,6 +20,7 @@ const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY || '';
 const CLERK_PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY || '';
+const MAX_PRO_KEY_GENERATION_ATTEMPTS = Number(process.env.MAX_PRO_KEY_GENERATION_ATTEMPTS || 20);
 const ADMIN_USER_IDS = new Set(
   (process.env.ADMIN_USER_IDS || '')
     .split(',')
@@ -46,17 +48,30 @@ app.use(clerkMiddleware());
 app.use(express.static(path.join(__dirname, 'public')));
 
 function loadAuthState() {
+  const emptyState = { users: Object.create(null), proKeys: Object.create(null) };
+
+  function toSafeMap(input) {
+    const safe = Object.create(null);
+    if (!input || typeof input !== 'object') return safe;
+    for (const [rawKey, value] of Object.entries(input)) {
+      const key = String(rawKey);
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      safe[key] = value;
+    }
+    return safe;
+  }
+
   if (!fs.existsSync(AUTH_STATE_FILE)) {
-    return { users: {}, proKeys: {} };
+    return emptyState;
   }
   try {
     const parsed = JSON.parse(fs.readFileSync(AUTH_STATE_FILE, 'utf8'));
     return {
-      users: parsed.users && typeof parsed.users === 'object' ? parsed.users : {},
-      proKeys: parsed.proKeys && typeof parsed.proKeys === 'object' ? parsed.proKeys : {},
+      users: toSafeMap(parsed.users),
+      proKeys: toSafeMap(parsed.proKeys),
     };
   } catch {
-    return { users: {}, proKeys: {} };
+    return emptyState;
   }
 }
 
@@ -67,6 +82,7 @@ function saveAuthState() {
 }
 
 function getCurrentMonthKey() {
+  // Use UTC month boundaries so quota resets are consistent regardless of server timezone.
   const now = new Date();
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 }
@@ -107,10 +123,14 @@ function getPlanForUser(record) {
 }
 
 function normalizeUserId(value) {
-  return String(value || '')
+  const normalized = String(value || '')
     .trim()
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 128);
+  if (!normalized || normalized === '__proto__' || normalized === 'constructor' || normalized === 'prototype') {
+    return '';
+  }
+  return normalized;
 }
 
 function hasAdmin() {
@@ -121,7 +141,7 @@ function ensureUserRecord(userId) {
   const normalizedUserId = normalizeUserId(userId);
   if (!normalizedUserId) return null;
 
-  if (!authState.users[normalizedUserId]) {
+  if (!Object.hasOwn(authState.users, normalizedUserId)) {
     authState.users[normalizedUserId] = {
       role: 'user',
       proExpiresAt: null,
@@ -142,9 +162,9 @@ function ensureUserRecord(userId) {
   return userRecord;
 }
 
-function getMonthlyGenerationLimit(user) {
-  if (user.role === 'admin') return null;
-  return user.plan?.isPro ? PRO_GENERATE_MONTHLY_LIMIT : USER_GENERATE_MONTHLY_LIMIT;
+function getMonthlyGenerationLimit(role, userRecord) {
+  if (role === 'admin') return null;
+  return getPlanForUser(userRecord).isPro ? PRO_GENERATE_MONTHLY_LIMIT : USER_GENERATE_MONTHLY_LIMIT;
 }
 
 function normalizeGenerationUsage(record) {
@@ -165,8 +185,8 @@ function normalizeGenerationUsage(record) {
   return usage;
 }
 
-function getGenerationStatus(user, record) {
-  const monthlyLimit = getMonthlyGenerationLimit(user);
+function getGenerationStatus(role, record) {
+  const monthlyLimit = getMonthlyGenerationLimit(role, record);
   const usage = normalizeGenerationUsage(record);
   return {
     monthlyLimit,
@@ -176,30 +196,34 @@ function getGenerationStatus(user, record) {
   };
 }
 
-function consumeGenerationQuota(user, record) {
-  const monthlyLimit = getMonthlyGenerationLimit(user);
+function consumeGenerationQuota(role, record) {
+  const monthlyLimit = getMonthlyGenerationLimit(role, record);
   if (monthlyLimit === null) {
-    return { allowed: true, status: getGenerationStatus(user, record) };
+    return { allowed: true, status: getGenerationStatus(role, record) };
   }
   const usage = normalizeGenerationUsage(record);
   if (usage.count >= monthlyLimit) {
-    return { allowed: false, status: getGenerationStatus(user, record) };
+    return { allowed: false, status: getGenerationStatus(role, record) };
   }
   usage.count += 1;
   record.generationUsage = usage;
   saveAuthState();
-  return { allowed: true, status: getGenerationStatus(user, record) };
+  return { allowed: true, status: getGenerationStatus(role, record) };
 }
 
 function makeProKey() {
+  // Avoid ambiguous characters (I/O/1/0) so admins and users can read keys reliably.
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const randomChunk = () =>
-    Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
-  let key = `PRO-${randomChunk()}-${randomChunk()}-${randomChunk()}`;
-  while (authState.proKeys[key]) {
+    Array.from({ length: 6 }, () => alphabet[crypto.randomInt(0, alphabet.length)]).join('');
+  let key = '';
+  for (let attempt = 0; attempt < MAX_PRO_KEY_GENERATION_ATTEMPTS; attempt += 1) {
     key = `PRO-${randomChunk()}-${randomChunk()}-${randomChunk()}`;
+    if (!Object.hasOwn(authState.proKeys, key)) {
+      return key;
+    }
   }
-  return key;
+  throw new Error('Unable to generate a unique Pro key. Please try again.');
 }
 
 // Rate limiters
@@ -218,10 +242,19 @@ app.get('/clerk.browser.js', readLimiter, (req, res) => {
 const adminGenerateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: ADMIN_GENERATE_LIMIT,
-  keyGenerator: (req) => getAuth(req).userId || ipKeyGenerator(req.ip),
+  keyGenerator: (req) => getAuth(req).userId || ipKeyGenerator(req),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Admin generation limit reached. Please try again later.' },
+});
+
+const adminPanelLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  keyGenerator: (req) => getAuth(req).userId || ipKeyGenerator(req),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many admin requests. Please try again later.' },
 });
 
 // Convert a topic string into a URL-safe slug
@@ -330,23 +363,20 @@ app.get('/api/auth/me', requireAuth(), (req, res) => {
     userId: req.user.userId,
     role: req.user.role,
     plan: req.user.plan,
-    generation: getGenerationStatus(req.user, req.userRecord),
+    generation: getGenerationStatus(req.user.role, req.userRecord),
   });
 });
 
-app.get('/admin', requireAuth(['admin']), (req, res) => {
+app.get('/admin', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
   return res.sendFile(path.join(__dirname, 'admin-panel.html'));
 });
 
-app.get('/api/admin/overview', requireAuth(['admin']), (req, res) => {
+app.get('/api/admin/overview', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
   const users = Object.entries(authState.users).map(([userId, user]) => ({
     userId,
     role: user.role,
     plan: getPlanForUser(user),
-    generation: getGenerationStatus(
-      { role: user.role, plan: getPlanForUser(user) },
-      user
-    ),
+    generation: getGenerationStatus(user.role, user),
     createdAt: user.createdAt || null,
   }));
   const proKeys = Object.values(authState.proKeys).sort((a, b) => {
@@ -357,7 +387,7 @@ app.get('/api/admin/overview', requireAuth(['admin']), (req, res) => {
   return res.json({ users, proKeys });
 });
 
-app.post('/api/admin/users/promote', requireAuth(['admin']), (req, res) => {
+app.post('/api/admin/users/promote', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
   const targetUserId = normalizeUserId(req.body && req.body.userId);
   if (!targetUserId) {
     return res.status(400).json({ error: 'Valid userId is required.' });
@@ -368,7 +398,7 @@ app.post('/api/admin/users/promote', requireAuth(['admin']), (req, res) => {
   return res.json({ userId: targetUserId, role: target.role });
 });
 
-app.post('/api/admin/pro-keys', requireAuth(['admin']), (req, res) => {
+app.post('/api/admin/pro-keys', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
   const requestedDuration = String((req.body && req.body.duration) || 'monthly').toLowerCase();
   const duration = ['monthly', 'annual', 'permanent'].includes(requestedDuration)
     ? requestedDuration
@@ -377,7 +407,12 @@ app.post('/api/admin/pro-keys', requireAuth(['admin']), (req, res) => {
     return res.status(400).json({ error: 'Duration must be monthly, annual, or permanent.' });
   }
 
-  const key = makeProKey();
+  let key = '';
+  try {
+    key = makeProKey();
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not generate a unique Pro key right now.' });
+  }
   const createdAt = new Date().toISOString();
   authState.proKeys[key] = {
     key,
@@ -391,12 +426,12 @@ app.post('/api/admin/pro-keys', requireAuth(['admin']), (req, res) => {
   return res.status(201).json(authState.proKeys[key]);
 });
 
-app.post('/api/pro/redeem', requireAuth(), (req, res) => {
+app.post('/api/pro/redeem', readLimiter, requireAuth(), (req, res) => {
   const key = String((req.body && req.body.key) || '').trim().toUpperCase();
   if (!key) {
     return res.status(400).json({ error: 'Key is required.' });
   }
-  const keyRecord = authState.proKeys[key];
+  const keyRecord = Object.hasOwn(authState.proKeys, key) ? authState.proKeys[key] : null;
   if (!keyRecord) {
     return res.status(404).json({ error: 'Invalid key.' });
   }
@@ -417,7 +452,7 @@ app.post('/api/pro/redeem', requireAuth(), (req, res) => {
     const current = Date.parse(userRecord.proExpiresAt || '');
     const base = Number.isFinite(current) && current > now ? new Date(current) : new Date();
     if (keyRecord.duration === 'annual') {
-      base.setMonth(base.getMonth() + 12);
+      base.setFullYear(base.getFullYear() + 1);
     } else {
       base.setMonth(base.getMonth() + 1);
     }
@@ -431,10 +466,7 @@ app.post('/api/pro/redeem', requireAuth(), (req, res) => {
   return res.json({
     success: true,
     plan: getPlanForUser(userRecord),
-    generation: getGenerationStatus(
-      { role: userRecord.role, plan: getPlanForUser(userRecord) },
-      userRecord
-    ),
+    generation: getGenerationStatus(userRecord.role, userRecord),
     redeemedKey: {
       key: keyRecord.key,
       duration: keyRecord.duration,
@@ -481,10 +513,10 @@ app.post('/api/generate', requireAuth(), generationLimiterByRole, async (req, re
 
   // Return cached page if it already exists
   if (fs.existsSync(safe.resolved)) {
-    return res.json({ slug: safe.sanitized, cached: true, generation: getGenerationStatus(req.user, req.userRecord) });
+    return res.json({ slug: safe.sanitized, cached: true, generation: getGenerationStatus(req.user.role, req.userRecord) });
   }
 
-  const quota = consumeGenerationQuota(req.user, req.userRecord);
+  const quota = consumeGenerationQuota(req.user.role, req.userRecord);
   if (!quota.allowed) {
     return res.status(429).json({
       error: 'Monthly generation limit reached for your plan.',
