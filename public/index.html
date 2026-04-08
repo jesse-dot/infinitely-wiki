@@ -17,12 +17,68 @@
       <p class="hero-subtitle">An AI-generated encyclopedia powered by Gemma. Search any topic and get a Wikipedia-style article instantly.</p>
 
       <section class="auth-panel" id="auth-panel">
-        <h2 class="auth-heading">Authentication required</h2>
-        <p class="auth-copy">Sign in or create an account with Clerk to generate and view pages.</p>
-        <div class="auth-actions">
-          <button type="button" class="search-btn auth-btn" id="sign-in-btn">Sign in</button>
-          <button type="button" class="auth-toggle-btn" id="sign-up-btn">Sign up</button>
-        </div>
+        <h2 class="auth-heading" id="auth-heading">Sign in</h2>
+        <p class="auth-copy" id="auth-copy">Use your username and password to access Infinitely Wiki.</p>
+        <form id="login-form" class="auth-form">
+          <input
+            type="text"
+            id="login-username"
+            class="search-input"
+            placeholder="Username"
+            maxlength="32"
+            autocomplete="username"
+            required
+          />
+          <input
+            type="password"
+            id="login-password"
+            class="search-input"
+            placeholder="Password"
+            maxlength="128"
+            autocomplete="current-password"
+            required
+          />
+          <button type="submit" class="search-btn auth-btn">Sign in</button>
+        </form>
+        <form id="signup-form" class="auth-form hidden">
+          <input
+            type="text"
+            id="signup-username"
+            class="search-input"
+            placeholder="Choose a username"
+            maxlength="32"
+            autocomplete="username"
+            required
+          />
+          <input
+            type="password"
+            id="signup-password"
+            class="search-input"
+            placeholder="Create a password"
+            maxlength="128"
+            autocomplete="new-password"
+            required
+          />
+          <input
+            type="password"
+            id="signup-password-confirm"
+            class="search-input"
+            placeholder="Confirm password"
+            maxlength="128"
+            autocomplete="new-password"
+            required
+          />
+          <input
+            type="text"
+            id="signup-pro-key"
+            class="search-input"
+            placeholder="Pro key (optional)"
+            maxlength="64"
+            autocomplete="off"
+          />
+          <button type="submit" class="search-btn auth-btn">Create account</button>
+        </form>
+        <button type="button" class="auth-toggle-btn" id="toggle-auth-btn">Need an account? Sign up</button>
         <p id="login-error-msg" class="error-msg hidden" role="alert"></p>
       </section>
 
@@ -87,7 +143,6 @@
     <p>Powered by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
   </footer>
 
-  <script src="/clerk.browser.js"></script>
   <script>
     const form = document.getElementById('search-form');
     const input = document.getElementById('search-input');
@@ -98,10 +153,19 @@
     const pagesList = document.getElementById('pages-list');
     const pagesSection = document.getElementById('pages-section');
     const authPanel = document.getElementById('auth-panel');
+    const authHeading = document.getElementById('auth-heading');
+    const authCopy = document.getElementById('auth-copy');
+    const loginForm = document.getElementById('login-form');
+    const loginUsername = document.getElementById('login-username');
+    const loginPassword = document.getElementById('login-password');
+    const signupForm = document.getElementById('signup-form');
+    const signupUsername = document.getElementById('signup-username');
+    const signupPassword = document.getElementById('signup-password');
+    const signupPasswordConfirm = document.getElementById('signup-password-confirm');
+    const signupProKey = document.getElementById('signup-pro-key');
+    const toggleAuthBtn = document.getElementById('toggle-auth-btn');
     const sessionPanel = document.getElementById('session-panel');
     const loginErrorMsg = document.getElementById('login-error-msg');
-    const signInBtn = document.getElementById('sign-in-btn');
-    const signUpBtn = document.getElementById('sign-up-btn');
     const sessionUsername = document.getElementById('session-username');
     const sessionRole = document.getElementById('session-role');
     const sessionPlan = document.getElementById('session-plan');
@@ -111,11 +175,10 @@
     const proRedeemForm = document.getElementById('pro-redeem-form');
     const proKeyInput = document.getElementById('pro-key-input');
     const proMsg = document.getElementById('pro-msg');
-    // Keep UI labels compact while still showing meaningful identity context.
     const MAX_DISPLAY_NAME_LENGTH = 100;
 
     let currentUser = null;
-    let clerk = null;
+    let authMode = 'login';
 
     function setLoading(loading) {
       btn.disabled = loading;
@@ -158,6 +221,24 @@
       proMsg.classList.add('error-msg');
     }
 
+    function safeDisplayName(value) {
+      const text = typeof value === 'string' ? value : '';
+      return text.trim().slice(0, MAX_DISPLAY_NAME_LENGTH) || 'User';
+    }
+
+    function setAuthMode(mode) {
+      authMode = mode === 'signup' ? 'signup' : 'login';
+      const isSignup = authMode === 'signup';
+      loginForm.classList.toggle('hidden', isSignup);
+      signupForm.classList.toggle('hidden', !isSignup);
+      authHeading.textContent = isSignup ? 'Create account' : 'Sign in';
+      authCopy.textContent = isSignup
+        ? 'Create an account to start generating articles.'
+        : 'Use your username and password to access Infinitely Wiki.';
+      toggleAuthBtn.textContent = isSignup ? 'Already have an account? Sign in' : 'Need an account? Sign up';
+      clearLoginError();
+    }
+
     function setAuthState(user) {
       currentUser = user || null;
       const isAuthenticated = !!currentUser;
@@ -170,6 +251,8 @@
       if (!isAuthenticated) {
         form.reset();
         proRedeemForm.reset();
+        loginForm.reset();
+        signupForm.reset();
         input.disabled = true;
         btn.disabled = true;
         adminLink.classList.add('hidden');
@@ -179,7 +262,7 @@
         return;
       }
 
-      sessionUsername.textContent = currentUser.username;
+      sessionUsername.textContent = safeDisplayName(currentUser.username || currentUser.userId);
       sessionRole.textContent = currentUser.role;
       const planName = currentUser.plan?.name || 'free';
       const generation = currentUser.generation || {};
@@ -229,16 +312,7 @@
       return div.innerHTML;
     }
 
-    function safeDisplayName(value) {
-      const text = typeof value === 'string' ? value : '';
-      return text.trim().slice(0, MAX_DISPLAY_NAME_LENGTH) || 'User';
-    }
-
     async function checkSession() {
-      if (!clerk) {
-        setAuthState(null);
-        return;
-      }
       try {
         const res = await fetch('/api/auth/me');
         if (!res.ok) {
@@ -246,13 +320,9 @@
           return;
         }
         const authData = await res.json();
-        const preferredName =
-          clerk.user?.username ||
-          clerk.user?.primaryEmailAddress?.emailAddress ||
-          clerk.user?.fullName ||
-          authData.userId;
         setAuthState({
-          username: safeDisplayName(preferredName),
+          userId: authData.userId,
+          username: authData.username,
           role: authData.role,
           plan: authData.plan,
           generation: authData.generation,
@@ -264,28 +334,75 @@
       }
     }
 
-    signInBtn.addEventListener('click', async () => {
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
       clearLoginError();
-      if (!clerk) return;
-      await clerk.redirectToSignIn({ afterSignInUrl: window.location.href });
-    });
-
-    signUpBtn.addEventListener('click', async () => {
-      clearLoginError();
-      if (!clerk) return;
-      await clerk.redirectToSignUp({ afterSignUpUrl: window.location.href });
-    });
-
-    logoutBtn.addEventListener('click', async () => {
-      if (!clerk) {
-        setAuthState(null);
+      const username = loginUsername.value.trim();
+      const password = loginPassword.value;
+      if (!username || !password) {
+        showLoginError('Please enter a username and password.');
         return;
       }
       try {
-        await clerk.signOut({ redirectUrl: window.location.href });
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showLoginError(data.error || 'Unable to sign in.');
+          return;
+        }
+        setAuthState(data);
+        await loadPages();
       } catch (err) {
-        console.error('Failed to sign out:', err);
-        // ignore network errors and clear local UI state
+        showLoginError('Network error while signing in.');
+      }
+    });
+
+    signupForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearLoginError();
+      const username = signupUsername.value.trim();
+      const password = signupPassword.value;
+      const confirm = signupPasswordConfirm.value;
+      const proKey = signupProKey.value.trim();
+      if (!username || !password) {
+        showLoginError('Please enter a username and password.');
+        return;
+      }
+      if (password !== confirm) {
+        showLoginError('Passwords do not match.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, proKey }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showLoginError(data.error || 'Unable to sign up.');
+          return;
+        }
+        setAuthState(data);
+        await loadPages();
+      } catch (err) {
+        showLoginError('Network error while creating your account.');
+      }
+    });
+
+    toggleAuthBtn.addEventListener('click', () => {
+      setAuthMode(authMode === 'login' ? 'signup' : 'login');
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (err) {
+        console.error('Failed to log out:', err);
       }
       setAuthState(null);
     });
@@ -355,33 +472,8 @@
       }
     });
 
-    async function initClerk() {
-      try {
-        const configRes = await fetch('/api/auth/config');
-        const config = await configRes.json().catch(() => ({}));
-        if (!configRes.ok || !config.publishableKey) {
-          showLoginError(config.error || 'Authentication is not configured.');
-          setAuthState(null);
-          return;
-        }
-
-        if (!window.Clerk) {
-          showLoginError('Failed to load Clerk SDK.');
-          setAuthState(null);
-          return;
-        }
-
-        clerk = window.Clerk;
-        await clerk.load({ publishableKey: config.publishableKey });
-        await checkSession();
-      } catch (err) {
-        console.error('Failed to initialize Clerk:', err);
-        showLoginError('Failed to initialize authentication.');
-        setAuthState(null);
-      }
-    }
-
-    initClerk();
+    setAuthMode('login');
+    checkSession();
   </script>
 </body>
 </html>
