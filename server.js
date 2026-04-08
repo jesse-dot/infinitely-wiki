@@ -4,6 +4,7 @@ require('dotenv').config();
 
 if (!process.env.CLERK_PUBLISHABLE_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
   process.env.CLERK_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  console.warn('CLERK_PUBLISHABLE_KEY not set; using NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY instead.');
 }
 
 const express = require('express');
