@@ -68,7 +68,8 @@ This app loads environment variables from `.env` using `dotenv`.
 | `GEMINI_API_KEY` | Google Gemini API key (required) |
 | `GOOGLE_API_KEY` | Alternative name for the API key |
 | `CLERK_SECRET_KEY` | Clerk backend secret key (required for auth verification) |
-| `CLERK_PUBLISHABLE_KEY` | Clerk frontend publishable key (required for browser auth) |
+| `CLERK_PUBLISHABLE_KEY` | Clerk frontend publishable key (required for browser auth; preferred) |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Alternate name for the Clerk publishable key (supported for compatibility) |
 | `ADMIN_USER_IDS` | Comma-separated Clerk user IDs treated as Admin accounts |
 | `GEMMA_PRIMARY_MODEL` | Primary generation model (default: `gemma-4-27b-it`) |
 | `GEMMA_FALLBACK_MODEL` | Fallback model if primary fails (default: `gemma-3-27b-it`) |

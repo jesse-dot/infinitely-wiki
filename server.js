@@ -21,7 +21,8 @@ const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY || '';
-const CLERK_PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY || '';
+const CLERK_PUBLISHABLE_KEY =
+  process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || '';
 const MAX_PRO_KEY_GENERATION_ATTEMPTS = Number(process.env.MAX_PRO_KEY_GENERATION_ATTEMPTS || 20);
 const ADMIN_USER_IDS = new Set(
   (process.env.ADMIN_USER_IDS || '')
