@@ -2,6 +2,10 @@
 
 require('dotenv').config();
 
+if (!process.env.CLERK_PUBLISHABLE_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
+  process.env.CLERK_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+}
+
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { clerkMiddleware, getAuth } = require('@clerk/express');
