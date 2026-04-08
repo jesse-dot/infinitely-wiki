@@ -10,6 +10,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -19,15 +24,17 @@ const AUTH_STATE_FILE = path.join(DATA_DIR, 'auth-state.json');
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
-const MAX_PRO_KEY_GENERATION_ATTEMPTS = Number(process.env.MAX_PRO_KEY_GENERATION_ATTEMPTS || 20);
+const MAX_PRO_KEY_GENERATION_ATTEMPTS = parsePositiveInt(process.env.MAX_PRO_KEY_GENERATION_ATTEMPTS, 20);
 const ADMIN_GENERATE_LIMIT = Number(process.env.ADMIN_GENERATE_LIMIT || 50);
 const PRO_GENERATE_MONTHLY_LIMIT = Number(process.env.PRO_GENERATE_MONTHLY_LIMIT || 100);
 const USER_GENERATE_MONTHLY_LIMIT = Number(process.env.USER_GENERATE_MONTHLY_LIMIT || 10);
 const SESSION_COOKIE_NAME = 'infinitely_wiki_session';
-const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS) || 30;
-const PASSWORD_HASH_ITERATIONS = Number(process.env.PASSWORD_HASH_ITERATIONS) || 120000;
+const SESSION_TTL_DAYS = parsePositiveInt(process.env.SESSION_TTL_DAYS, 30);
+const PASSWORD_HASH_ITERATIONS = parsePositiveInt(process.env.PASSWORD_HASH_ITERATIONS, 120000);
 const PASSWORD_HASH_KEYLEN = 32;
 const PASSWORD_HASH_DIGEST = 'sha256';
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const SECONDS_PER_DAY = 24 * 60 * 60;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 const PASSWORD_MIN_LENGTH = 8;
@@ -234,7 +241,7 @@ function pruneExpiredSessions() {
 function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
   const createdAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * MS_PER_DAY).toISOString();
   authState.sessions[token] = { userId, createdAt, expiresAt };
   saveAuthState();
   return token;
@@ -259,7 +266,7 @@ function getSessionRecord(token) {
 }
 
 function setSessionCookie(res, token) {
-  const maxAgeSeconds = SESSION_TTL_DAYS * 24 * 60 * 60;
+  const maxAgeSeconds = SESSION_TTL_DAYS * SECONDS_PER_DAY;
   const secure = process.env.NODE_ENV === 'production';
   const cookie = [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
@@ -613,7 +620,7 @@ app.post('/api/auth/logout', readLimiter, (req, res) => {
   return res.json({ success: true });
 });
 
-app.get('/api/auth/me', requireAuth(), (req, res) => {
+app.get('/api/auth/me', readLimiter, requireAuth(), (req, res) => {
   return res.json(buildAuthPayload(req.user.userId, req.userRecord));
 });
 
