@@ -30,7 +30,7 @@ const PRO_GENERATE_MONTHLY_LIMIT = Number(process.env.PRO_GENERATE_MONTHLY_LIMIT
 const USER_GENERATE_MONTHLY_LIMIT = Number(process.env.USER_GENERATE_MONTHLY_LIMIT || 10);
 const SESSION_COOKIE_NAME = 'infinitely_wiki_session';
 const SESSION_TTL_DAYS = parsePositiveInt(process.env.SESSION_TTL_DAYS, 30);
-const PASSWORD_HASH_ITERATIONS = parsePositiveInt(process.env.PASSWORD_HASH_ITERATIONS, 120000);
+const PASSWORD_HASH_ITERATIONS = parsePositiveInt(process.env.PASSWORD_HASH_ITERATIONS, 310000);
 const PASSWORD_HASH_KEYLEN = 32;
 const PASSWORD_HASH_DIGEST = 'sha256';
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -225,6 +225,16 @@ function parseCookies(header) {
   return result;
 }
 
+function isSecureRequest(req) {
+  if (process.env.SESSION_COOKIE_SECURE === 'true') return true;
+  if (process.env.SESSION_COOKIE_SECURE === 'false') return false;
+  const forwarded = req.headers['x-forwarded-proto'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim().toLowerCase() === 'https';
+  }
+  return req.secure === true;
+}
+
 function pruneExpiredSessions() {
   const now = Date.now();
   let changed = false;
@@ -265,9 +275,9 @@ function getSessionRecord(token) {
   return authState.sessions[token] || null;
 }
 
-function setSessionCookie(res, token) {
+function setSessionCookie(res, token, req) {
   const maxAgeSeconds = SESSION_TTL_DAYS * SECONDS_PER_DAY;
-  const secure = process.env.NODE_ENV === 'production';
+  const secure = isSecureRequest(req);
   const cookie = [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
     'Path=/',
@@ -279,13 +289,15 @@ function setSessionCookie(res, token) {
   res.setHeader('Set-Cookie', cookie);
 }
 
-function clearSessionCookie(res) {
+function clearSessionCookie(res, req) {
+  const secure = req ? isSecureRequest(req) : false;
   const cookie = [
     `${SESSION_COOKIE_NAME}=`,
     'Path=/',
     'Max-Age=0',
     'HttpOnly',
     'SameSite=Lax',
+    secure ? 'Secure' : '',
   ].join('; ');
   res.setHeader('Set-Cookie', cookie);
 }
@@ -442,7 +454,7 @@ function requireAuth(allowedRoles = []) {
     const session = getSessionUser(req);
     if (!session?.userId) {
       if (getSessionToken(req)) {
-        clearSessionCookie(res);
+        clearSessionCookie(res, req);
       }
       if (req.path.startsWith('/api/')) {
         return res.status(401).json({ error: 'Authentication required.' });
@@ -452,7 +464,7 @@ function requireAuth(allowedRoles = []) {
 
     const userRecord = session.record;
     if (!userRecord) {
-      clearSessionCookie(res);
+      clearSessionCookie(res, req);
       return res.status(400).json({ error: 'Invalid user.' });
     }
 
@@ -587,7 +599,7 @@ app.post('/api/auth/signup', readLimiter, (req, res) => {
   }
 
   const token = createSession(userId);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, req);
   return res.status(201).json(buildAuthPayload(userId, userRecord));
 });
 
@@ -609,14 +621,14 @@ app.post('/api/auth/login', readLimiter, (req, res) => {
   const existingToken = getSessionToken(req);
   if (existingToken) revokeSession(existingToken);
   const token = createSession(usernameCheck.normalized);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, req);
   return res.json(buildAuthPayload(usernameCheck.normalized, userRecord));
 });
 
 app.post('/api/auth/logout', readLimiter, (req, res) => {
   const token = getSessionToken(req);
   if (token) revokeSession(token);
-  clearSessionCookie(res);
+  clearSessionCookie(res, req);
   return res.json({ success: true });
 });
 

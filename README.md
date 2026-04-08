@@ -72,7 +72,8 @@ This app loads environment variables from `.env` using `dotenv`.
 | `USER_GENERATE_MONTHLY_LIMIT` | Free user generations per month (default: `10`) |
 | `PRO_GENERATE_MONTHLY_LIMIT` | Pro user generations per month (default: `100`) |
 | `SESSION_TTL_DAYS` | Session cookie duration in days (default: `30`) |
-| `PASSWORD_HASH_ITERATIONS` | PBKDF2 iteration count for password hashing (default: `120000`) |
+| `SESSION_COOKIE_SECURE` | Force secure cookies (`true`/`false`, default auto-detect) |
+| `PASSWORD_HASH_ITERATIONS` | PBKDF2 iteration count for password hashing (default: `310000`) |
 | `PORT` | Port to listen on (default: `3000`) |
 | `HOST` | Host address to bind to (default: `0.0.0.0`) |
 
