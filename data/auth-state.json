@@ -1,0 +1,36 @@
+{
+  "users": {
+    "likesuser": {
+      "username": "likesuser",
+      "role": "admin",
+      "passwordSalt": "825bb094104b934fbc3a2baef28e7c58",
+      "passwordHash": "c15c5f2d8a6be1e51da8b2546dcc7c75abde401f5defc04ba6dec7971096821f",
+      "passwordIterations": 310000,
+      "proExpiresAt": null,
+      "proPermanent": false,
+      "generationUsage": {
+        "month": "2026-04",
+        "count": 0
+      },
+      "stats": {
+        "generatedArticles": 0,
+        "infiniteScrollDiscoveries": 0
+      },
+      "createdAt": "2026-04-09T15:08:58.704Z",
+      "likedArticles": [
+        "sample"
+      ],
+      "savedArticles": [
+        "sample"
+      ]
+    }
+  },
+  "proKeys": {},
+  "sessions": {
+    "fee1121e9e157f70ec605ab7f0ad9a89685915481620ee5a033d4ef472ed9b57": {
+      "userId": "likesuser",
+      "createdAt": "2026-04-09T15:08:58.704Z",
+      "expiresAt": "2026-05-09T15:08:58.704Z"
+    }
+  }
+}
