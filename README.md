@@ -73,9 +73,20 @@ This app loads environment variables from `.env` using `dotenv`.
 | `PRO_GENERATE_MONTHLY_LIMIT` | Pro user generations per month (default: `100`) |
 | `SESSION_TTL_DAYS` | Session cookie duration in days (default: `30`) |
 | `SESSION_COOKIE_SECURE` | Force secure cookies (`true`/`false`, default auto-detect) |
+| `TRUST_PROXY` | Express trust proxy setting (default: `loopback`) |
 | `PASSWORD_HASH_ITERATIONS` | PBKDF2 iteration count for password hashing (default: `310000`) |
 | `PORT` | Port to listen on (default: `3000`) |
 | `HOST` | Host address to bind to (default: `0.0.0.0`) |
+
+## Securing with Cloudflare Tunnel or Tailscale Funnel
+
+To keep the Node server private and expose it only through your tunnel/funnel:
+
+- Set `HOST=127.0.0.1` so the app only listens on localhost
+- Keep `TRUST_PROXY=loopback` (default), which trusts only local reverse proxies (127.0.0.1/::1); change it only if your trusted proxy is on a different network hop/address
+- Use `SESSION_COOKIE_SECURE=true` in production
+
+This allows secure cookie handling and per-client rate limiting to work correctly behind Cloudflare Tunnel and Tailscale Funnel.
 
 ## Project Structure
 
