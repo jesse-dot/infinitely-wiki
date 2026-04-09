@@ -83,7 +83,7 @@ This app loads environment variables from `.env` using `dotenv`.
 To keep the Node server private and expose it only through your tunnel/funnel:
 
 - Set `HOST=127.0.0.1` so the app only listens on localhost
-- Keep `TRUST_PROXY=loopback` (default) so forwarded HTTPS/IP headers from local tunnel proxies are trusted
+- Keep `TRUST_PROXY=loopback` (default), which trusts only local reverse proxies (127.0.0.1/::1); change it only if your trusted proxy is on a different network hop/address
 - Use `SESSION_COOKIE_SECURE=true` in production
 
 This allows secure cookie handling and per-client rate limiting to work correctly behind Cloudflare Tunnel and Tailscale Funnel.
