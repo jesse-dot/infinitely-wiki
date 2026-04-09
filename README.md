@@ -9,7 +9,7 @@ An AI-powered encyclopedia that generates Wikipedia-style articles on any topic 
 - ⚠️ Every article displays an AI-generated content warning banner at the top
 - 💾 Generated articles are saved to disk and served on subsequent visits without re-generating
 - 🗂️ Landing page lists all previously generated articles
-- 🛡️ First authenticated user is auto-assigned Admin
+- 🛡️ First created account is auto-assigned Admin
 - 🧰 Admin Panel for promoting users to admin and generating Pro keys
 - 🔑 Pro plan keys can be generated as monthly, annual, or permanent and redeemed by users
 - 📊 Monthly generation quotas by plan (Free vs Pro), plus higher admin request throughput
@@ -27,7 +27,7 @@ npm install
 
 # Copy the environment template and fill in your keys
 cp .env.example .env
-# Edit .env with your Gemini API key, Clerk keys, and any optional settings
+# Edit .env with your Gemini API key and any optional settings
 
 # Start the server
 npm start
@@ -45,15 +45,14 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 
 ### Accounts and Permissions
 
-- Authentication is handled by **Clerk** (sign up and sign in)
+- Create an account with a username + password
 - **Admin account**:
-  - The first authenticated user is automatically assigned admin
+  - The first account created is automatically assigned admin
   - Existing admins can promote other users to admin in `/admin`
-  - Any Clerk user in `ADMIN_USER_IDS` is always treated as admin
 - **Pro plan**:
   - Admins generate keys in `/admin`
   - Key types: `monthly` (default), `annual`, `permanent`
-  - Users redeem keys from the home page
+  - Users redeem keys from the home page (or enter a key during sign-up)
 - Generation limits:
   - Admin: `50` requests/minute by default
   - Free users: `10` generations/month
@@ -67,15 +66,14 @@ This app loads environment variables from `.env` using `dotenv`.
 |---|---|
 | `GEMINI_API_KEY` | Google Gemini API key (required) |
 | `GOOGLE_API_KEY` | Alternative name for the API key |
-| `CLERK_SECRET_KEY` | Clerk backend secret key (required for auth verification) |
-| `CLERK_PUBLISHABLE_KEY` | Clerk frontend publishable key (required for browser auth; preferred) |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Alternate name for the Clerk publishable key (supported for compatibility) |
-| `ADMIN_USER_IDS` | Comma-separated Clerk user IDs treated as Admin accounts |
 | `GEMMA_PRIMARY_MODEL` | Primary generation model (default: `gemma-4-27b-it`) |
 | `GEMMA_FALLBACK_MODEL` | Fallback model if primary fails (default: `gemma-3-27b-it`) |
 | `ADMIN_GENERATE_LIMIT` | Admin generation requests per minute (default: `50`) |
 | `USER_GENERATE_MONTHLY_LIMIT` | Free user generations per month (default: `10`) |
 | `PRO_GENERATE_MONTHLY_LIMIT` | Pro user generations per month (default: `100`) |
+| `SESSION_TTL_DAYS` | Session cookie duration in days (default: `30`) |
+| `SESSION_COOKIE_SECURE` | Force secure cookies (`true`/`false`, default auto-detect) |
+| `PASSWORD_HASH_ITERATIONS` | PBKDF2 iteration count for password hashing (default: `310000`) |
 | `PORT` | Port to listen on (default: `3000`) |
 | `HOST` | Host address to bind to (default: `0.0.0.0`) |
 

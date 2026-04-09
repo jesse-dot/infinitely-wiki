@@ -31,8 +31,9 @@
 
       <section class="pro-panel">
         <h2 class="auth-heading">Promote user to admin</h2>
+        <label for="promote-user-id" class="auth-copy">Username</label>
         <form id="promote-user-form" class="pro-redeem-form">
-          <input type="text" id="promote-user-id" class="search-input" maxlength="128" pattern="^[a-zA-Z0-9_-]+$" placeholder="Clerk user ID (e.g., user_123)" aria-label="User ID to promote" required />
+          <input type="text" id="promote-user-id" class="search-input" maxlength="32" pattern="^[a-zA-Z0-9_-]+$" placeholder="Username to promote" aria-label="Username to promote" required />
           <button type="submit" class="search-btn">Promote</button>
         </form>
         <p id="promote-msg" class="error-msg hidden" role="status"></p>
@@ -58,7 +59,6 @@
     <p><a href="/">← Back to home</a></p>
   </footer>
 
-  <script src="/clerk.browser.js"></script>
   <script>
     const generateKeyForm = document.getElementById('generate-key-form');
     const keyDuration = document.getElementById('key-duration');
