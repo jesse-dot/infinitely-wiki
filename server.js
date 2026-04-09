@@ -62,6 +62,7 @@ const BADGE_DEFINITIONS = [
 const MAX_COMMENT_LENGTH = 1000;
 const MAX_COMMENTS_PER_ARTICLE = 1000;
 const MAX_SANITIZED_SLUGS = 1000;
+const MAX_PROFILE_PICTURE_URL_LENGTH = 500;
 
 function parseTrustProxy(value) {
   const raw = String(value || '').trim();
@@ -229,6 +230,40 @@ function validatePasswordInput(value) {
   return { password: raw };
 }
 
+function sanitizeProfilePictureUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.length > MAX_PROFILE_PICTURE_URL_LENGTH) return '';
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return '';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return '';
+  }
+  return parsed.toString();
+}
+
+function validateProfilePictureInput(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { profilePictureUrl: '' };
+  if (raw.length > MAX_PROFILE_PICTURE_URL_LENGTH) {
+    return { error: `Profile picture URL is too long (max ${MAX_PROFILE_PICTURE_URL_LENGTH} characters).` };
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { error: 'Profile picture URL must be a valid URL.' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { error: 'Profile picture URL must use http or https.' };
+  }
+  return { profilePictureUrl: parsed.toString() };
+}
+
 function hashPassword(password, salt, iterations = PASSWORD_HASH_ITERATIONS) {
   return crypto.pbkdf2Sync(password, salt, iterations, PASSWORD_HASH_KEYLEN, PASSWORD_HASH_DIGEST).toString('hex');
 }
@@ -248,8 +283,25 @@ function getUserRecord(userId) {
   if (!normalizedUserId) return null;
   const record = authState.users[normalizedUserId];
   if (!record) return null;
+  let changed = false;
   if (!record.username) {
     record.username = normalizedUserId;
+    changed = true;
+  }
+  if (!Array.isArray(record.likedArticles)) {
+    record.likedArticles = [];
+    changed = true;
+  }
+  if (!Array.isArray(record.savedArticles)) {
+    record.savedArticles = [];
+    changed = true;
+  }
+  const sanitizedProfilePictureUrl = sanitizeProfilePictureUrl(record.profilePictureUrl);
+  if ((record.profilePictureUrl || '') !== sanitizedProfilePictureUrl) {
+    record.profilePictureUrl = sanitizedProfilePictureUrl;
+    changed = true;
+  }
+  if (changed) {
     saveAuthState();
   }
   return record;
@@ -273,6 +325,9 @@ function createUserRecord(userId, password) {
       generatedArticles: 0,
       infiniteScrollDiscoveries: 0,
     },
+    likedArticles: [],
+    savedArticles: [],
+    profilePictureUrl: '',
     createdAt: new Date().toISOString(),
   };
   authState.users[normalizedUserId] = record;
@@ -522,6 +577,7 @@ function getArticleGeneratorInfo(slug) {
   return {
     userId: generatorId,
     username: generatorRecord.username || generatorId,
+    profilePictureUrl: sanitizeProfilePictureUrl(generatorRecord.profilePictureUrl),
     generatedAt: record.generatedAt || null,
   };
 }
@@ -540,7 +596,11 @@ function listArticleComments(slug) {
         body: String(comment.body || ''),
         createdAt: comment.createdAt || null,
         author: authorId
-          ? { userId: authorId, username: authorRecord?.username || authorId }
+          ? {
+            userId: authorId,
+            username: authorRecord?.username || authorId,
+            profilePictureUrl: sanitizeProfilePictureUrl(authorRecord?.profilePictureUrl),
+          }
           : null,
       };
     })
@@ -745,6 +805,9 @@ function sanitizeCommaSeparatedSlugs(value) {
 }
 
 function sanitizeStoredArticleSlugList(value) {
+  if (typeof value === 'string') {
+    return sanitizeCommaSeparatedSlugs(value);
+  }
   if (!Array.isArray(value)) return [];
   const unique = new Set(
     value
@@ -876,11 +939,49 @@ function generationLimiterByRole(req, res, next) {
   return next();
 }
 
+function userCanUseInfiniteScroll(user) {
+  if (!user || typeof user !== 'object') return false;
+  if (user.role === 'admin') return true;
+  return !!(user.plan && user.plan.isPro);
+}
+
+function requireProInfiniteScroll(req, res, next) {
+  if (userCanUseInfiniteScroll(req.user)) {
+    return next();
+  }
+  if (req.path.startsWith('/api/')) {
+    return res.status(403).json({ error: 'Infinite discovery is available for Pro users only.' });
+  }
+  return res.status(403).send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pro required — Infinitely Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+    <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
+  </header>
+  <main class="profile-page">
+    <section class="profile-card">
+      <h1>Infinite Discovery is Pro-only</h1>
+      <p>Upgrade to Pro on your account settings page to unlock infinite scroll discovery.</p>
+      <p><a class="wiki-stream-link" href="/settings">Go to account settings</a></p>
+    </section>
+  </main>
+</body>
+</html>`);
+}
+
 function buildAuthPayload(userId, userRecord) {
   const stats = ensureUserProgress(userRecord);
   return {
     userId,
     username: userRecord.username || userId,
+    profilePictureUrl: sanitizeProfilePictureUrl(userRecord.profilePictureUrl),
     role: userRecord.role,
     plan: getPlanForUser(userRecord),
     generation: getGenerationStatus(userRecord.role, userRecord),
@@ -1001,6 +1102,115 @@ app.get('/profile', readLimiter, requireAuth(), (req, res) => {
   return res.redirect(`/u/${encodeURIComponent(req.user.userId)}`);
 });
 
+app.get('/settings', readLimiter, requireAuth(), (req, res) => {
+  return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Account settings — Infinitely Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+    <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
+  </header>
+  <main class="profile-page">
+    <section class="profile-card">
+      <h1>Account settings</h1>
+      <p class="profile-meta">Manage your Pro access and profile picture.</p>
+      <form id="settings-pro-form" class="auth-form">
+        <label for="settings-pro-key">Redeem Pro key</label>
+        <input id="settings-pro-key" class="search-input" type="text" maxlength="64" placeholder="Enter Pro key" />
+        <button class="search-btn" type="submit">Redeem key</button>
+      </form>
+      <p id="settings-pro-message" class="error-msg hidden" role="status"></p>
+      <form id="settings-avatar-form" class="auth-form">
+        <label for="settings-avatar-url">Profile picture URL</label>
+        <input id="settings-avatar-url" class="search-input" type="url" maxlength="${MAX_PROFILE_PICTURE_URL_LENGTH}" placeholder="https://example.com/avatar.png" />
+        <button class="search-btn" type="submit">Save profile picture</button>
+      </form>
+      <p id="settings-avatar-message" class="error-msg hidden" role="status"></p>
+      <p><a class="wiki-stream-link" href="/profile">View my profile</a></p>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const proForm = document.getElementById('settings-pro-form');
+      const proInput = document.getElementById('settings-pro-key');
+      const proMessage = document.getElementById('settings-pro-message');
+      const avatarForm = document.getElementById('settings-avatar-form');
+      const avatarInput = document.getElementById('settings-avatar-url');
+      const avatarMessage = document.getElementById('settings-avatar-message');
+
+      function showMessage(el, text, isError) {
+        el.textContent = text;
+        el.classList.remove('hidden');
+        el.classList.toggle('error-msg', !!isError);
+        el.classList.toggle('success-msg', !isError);
+      }
+
+      async function loadSettings() {
+        try {
+          const res = await fetch('/api/auth/me');
+          if (!res.ok) return;
+          const data = await res.json();
+          avatarInput.value = data.profilePictureUrl || '';
+        } catch {
+          // Ignore load failures.
+        }
+      }
+
+      proForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const key = proInput.value.trim();
+        if (!key) return;
+        try {
+          const res = await fetch('/api/pro/redeem', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showMessage(proMessage, data.error || 'Could not redeem Pro key.', true);
+            return;
+          }
+          proInput.value = '';
+          showMessage(proMessage, 'Pro key redeemed successfully.', false);
+        } catch {
+          showMessage(proMessage, 'Network error while redeeming key.', true);
+        }
+      });
+
+      avatarForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          const res = await fetch('/api/account/profile-picture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profilePictureUrl: avatarInput.value.trim() }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showMessage(avatarMessage, data.error || 'Could not save profile picture.', true);
+            return;
+          }
+          avatarInput.value = data.profilePictureUrl || '';
+          showMessage(avatarMessage, 'Profile picture saved.', false);
+        } catch {
+          showMessage(avatarMessage, 'Network error while saving profile picture.', true);
+        }
+      });
+
+      loadSettings();
+    })();
+  </script>
+</body>
+</html>`);
+});
+
 app.get('/u/:userId', readLimiter, requireAuth(), (req, res) => {
   const profileUserId = normalizeUserId(req.params.userId);
   if (!profileUserId) {
@@ -1018,6 +1228,17 @@ app.get('/u/:userId', readLimiter, requireAuth(), (req, res) => {
   const isCurrentUser = req.user.userId === profileUserId;
   const role = profileRecord.role || 'user';
   const createdAt = profileRecord.createdAt ? new Date(profileRecord.createdAt).toISOString().slice(0, 10) : 'Unknown';
+  const profilePictureUrl = sanitizeProfilePictureUrl(profileRecord.profilePictureUrl);
+  const likedItemsHtml = profileRecord.likedArticles.length > 0
+    ? profileRecord.likedArticles
+      .map((slug) => `<li><a class="wiki-stream-link" href="/wiki/${encodeURIComponent(slug)}">${escapeHtml(slug)}</a></li>`)
+      .join('')
+    : '<li class="profile-badge locked">No liked articles yet.</li>';
+  const savedItemsHtml = profileRecord.savedArticles.length > 0
+    ? profileRecord.savedArticles
+      .map((slug) => `<li><a class="wiki-stream-link" href="/wiki/${encodeURIComponent(slug)}">${escapeHtml(slug)}</a></li>`)
+      .join('')
+    : '<li class="profile-badge locked">No saved articles yet.</li>';
   const badgeItemsHtml = badges.map((badge) => `
       <li class="profile-badge ${badge.earned ? 'earned' : 'locked'}">
         <strong>${escapeHtml(badge.name)}</strong>
@@ -1041,14 +1262,28 @@ app.get('/u/:userId', readLimiter, requireAuth(), (req, res) => {
   </header>
   <main class="profile-page">
     <section class="profile-card">
+      <div class="profile-header">
+        ${profilePictureUrl ? `<img src="${escapeHtml(profilePictureUrl)}" alt="${escapeHtml(displayName)} profile picture" class="profile-avatar" loading="lazy" referrerpolicy="no-referrer" />` : '<div class="profile-avatar profile-avatar-fallback" aria-hidden="true">👤</div>'}
+        <div>
       <h1>${escapeHtml(displayName)} ${isCurrentUser ? '(You)' : ''}</h1>
       <p class="profile-meta">Role: ${escapeHtml(role)} · Joined: ${escapeHtml(createdAt)}</p>
+      ${isCurrentUser ? '<p><a class="wiki-stream-link" href="/settings">Account settings</a></p>' : ''}
+        </div>
+      </div>
       <div class="profile-stats">
         <div class="profile-stat"><strong>${stats.generatedArticles}</strong><span>Generated articles</span></div>
         <div class="profile-stat"><strong>${stats.infiniteScrollDiscoveries}</strong><span>Infinite-scroll discoveries</span></div>
         <div class="profile-stat"><strong>${profileRecord.likedArticles.length}</strong><span>Liked articles</span></div>
         <div class="profile-stat"><strong>${profileRecord.savedArticles.length}</strong><span>Saved articles</span></div>
       </div>
+    </section>
+    <section class="profile-card">
+      <h2>Liked articles</h2>
+      <ul class="profile-badge-list">${likedItemsHtml}</ul>
+    </section>
+    <section class="profile-card">
+      <h2>Saved articles</h2>
+      <ul class="profile-badge-list">${savedItemsHtml}</ul>
     </section>
     <section class="profile-card">
       <h2>Badges</h2>
@@ -1144,6 +1379,16 @@ app.post('/api/pro/redeem', readLimiter, requireAuth(), (req, res) => {
       redeemedAt: redemption.keyRecord.redeemedAt,
     },
   });
+});
+
+app.post('/api/account/profile-picture', writeLimiter, requireAuth(), (req, res) => {
+  const result = validateProfilePictureInput(req.body && req.body.profilePictureUrl);
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+  req.userRecord.profilePictureUrl = result.profilePictureUrl;
+  saveAuthState();
+  return res.json({ success: true, profilePictureUrl: req.userRecord.profilePictureUrl });
 });
 
 // List all saved wiki pages
@@ -1256,7 +1501,7 @@ app.post('/api/wiki/:slug/actions', writeLimiter, requireAuth(), (req, res) => {
   });
 });
 
-app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), (req, res) => {
+app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), requireProInfiniteScroll, (req, res) => {
   const safe = safeWikiPath(req.params.slug);
   if (!safe) {
     return res.status(400).json({ error: 'Invalid page slug.' });
@@ -1360,7 +1605,7 @@ Do NOT include any preamble, disclaimers, or meta-commentary — output ONLY the
   }
 });
 
-app.get('/discover', readLimiter, requireAuth(), (req, res) => {
+app.get('/discover', readLimiter, requireAuth(), requireProInfiniteScroll, (req, res) => {
   try {
     const files = fs.readdirSync(WIKI_DIR).filter((file) => file.endsWith('.md'));
     if (files.length === 0) {
@@ -1399,7 +1644,7 @@ app.get('/discover', readLimiter, requireAuth(), (req, res) => {
 });
 
 // Serve an infinite discovery page rendered as HTML
-app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
+app.get('/discover/:slug', readLimiter, requireAuth(), requireProInfiniteScroll, (req, res) => {
   const safe = safeWikiPath(req.params.slug);
   if (!safe) {
     return res.status(400).send('Invalid page slug.');
@@ -1522,7 +1767,10 @@ app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
         if (!generator || !generator.userId) {
           return '<p class="wiki-generator-line">Generated by <span>Unknown user</span></p>';
         }
-        return '<p class="wiki-generator-line">Generated by <a class="wiki-stream-link" href="/u/' +
+        const avatar = generator.profilePictureUrl
+          ? '<img class="inline-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + escapeHtml(generator.profilePictureUrl) + '" alt="">'
+          : '<span class="inline-avatar inline-avatar-fallback" aria-hidden="true">👤</span>';
+        return '<p class="wiki-generator-line">' + avatar + ' Generated by <a class="wiki-stream-link" href="/u/' +
           encodeURIComponent(generator.userId) + '">' + escapeHtml(generator.username || generator.userId) + '</a></p>';
       }
 
@@ -1537,7 +1785,10 @@ app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
         }
         return comments.map((comment) => {
           const author = comment.author && comment.author.userId
-            ? '<a class="wiki-stream-link" href="/u/' + encodeURIComponent(comment.author.userId) + '">' + escapeHtml(comment.author.username || comment.author.userId) + '</a>'
+            ? ((comment.author.profilePictureUrl
+              ? '<img class="inline-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + escapeHtml(comment.author.profilePictureUrl) + '" alt="">'
+              : '<span class="inline-avatar inline-avatar-fallback" aria-hidden="true">👤</span>') +
+              '<a class="wiki-stream-link" href="/u/' + encodeURIComponent(comment.author.userId) + '">' + escapeHtml(comment.author.username || comment.author.userId) + '</a>')
             : 'Unknown user';
           return '<article class="wiki-comment-item">' +
             '<p class="wiki-comment-meta">' + author + ' · ' + escapeHtml(comment.createdAt || '') + '</p>' +
@@ -1848,6 +2099,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   const generator = getArticleGeneratorInfo(safe.sanitized);
   const generatorJson = safeJsonForScript(generator);
   const commentMaxLengthAttr = String(MAX_COMMENT_LENGTH);
+  const canUseInfiniteScroll = userCanUseInfiniteScroll(req.user);
 
   return res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -1867,7 +2119,9 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
     <div class="wiki-article-actions">
       <button type="button" class="wiki-action-btn" id="wiki-like-btn" aria-pressed="false">♡ Like</button>
       <button type="button" class="wiki-action-btn" id="wiki-save-btn" aria-pressed="false">💾 Save</button>
-      <a class="wiki-stream-link" href="/discover/${encodeURIComponent(safe.sanitized)}">Open in Infinite Discovery</a>
+      ${canUseInfiniteScroll
+    ? `<a class="wiki-stream-link" href="/discover/${encodeURIComponent(safe.sanitized)}">Open in Infinite Discovery</a>`
+    : '<a class="wiki-stream-link" href="/settings">Infinite Discovery is Pro-only</a>'}
     </div>
     <section class="wiki-talk-section">
       <h2 class="wiki-talk-heading">Talk</h2>
@@ -1884,7 +2138,9 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   <footer class="site-footer">
     <p>Generated by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
     <p><a href="/">← Back to search</a></p>
-    <p><a href="/discover/${encodeURIComponent(safe.sanitized)}">Start infinite discovery from this article</a></p>
+    ${canUseInfiniteScroll
+    ? `<p><a href="/discover/${encodeURIComponent(safe.sanitized)}">Start infinite discovery from this article</a></p>`
+    : '<p><a href="/settings">Upgrade to Pro to start infinite discovery</a></p>'}
   </footer>
   <script>
     (() => {
@@ -1923,7 +2179,10 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
           generatorLine.textContent = 'Generated by Unknown user';
           return;
         }
-        generatorLine.innerHTML = 'Generated by <a class="wiki-stream-link" href="/u/' +
+        const avatar = generator.profilePictureUrl
+          ? '<img class="inline-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + escapeHtml(generator.profilePictureUrl) + '" alt="">'
+          : '<span class="inline-avatar inline-avatar-fallback" aria-hidden="true">👤</span>';
+        generatorLine.innerHTML = avatar + ' Generated by <a class="wiki-stream-link" href="/u/' +
           encodeURIComponent(generator.userId) + '">' + escapeHtml(generator.username || generator.userId) + '</a>';
       }
 
@@ -1938,7 +2197,10 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
         }
         commentsList.innerHTML = comments.map((comment) => {
           const author = comment.author && comment.author.userId
-            ? '<a class="wiki-stream-link" href="/u/' + encodeURIComponent(comment.author.userId) + '">' + escapeHtml(comment.author.username || comment.author.userId) + '</a>'
+            ? ((comment.author.profilePictureUrl
+              ? '<img class="inline-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + escapeHtml(comment.author.profilePictureUrl) + '" alt="">'
+              : '<span class="inline-avatar inline-avatar-fallback" aria-hidden="true">👤</span>') +
+              '<a class="wiki-stream-link" href="/u/' + encodeURIComponent(comment.author.userId) + '">' + escapeHtml(comment.author.username || comment.author.userId) + '</a>')
             : 'Unknown user';
           return '<article class="wiki-comment-item">' +
             '<p class="wiki-comment-meta">' + author + ' · ' + escapeHtml(comment.createdAt || '') + '</p>' +

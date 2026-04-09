@@ -92,6 +92,7 @@
         <div class="session-actions">
           <a href="/discover" class="admin-link hidden" id="discover-link">Infinite Discovery</a>
           <a href="/profile" class="admin-link hidden" id="profile-link">Profile</a>
+          <a href="/settings" class="admin-link hidden" id="settings-link">Settings</a>
           <a href="/admin" class="admin-link hidden" id="admin-link">Admin Panel</a>
           <button type="button" class="logout-btn" id="logout-btn">Log out</button>
         </div>
@@ -175,6 +176,7 @@
     const sessionPlan = document.getElementById('session-plan');
     const discoverLink = document.getElementById('discover-link');
     const profileLink = document.getElementById('profile-link');
+    const settingsLink = document.getElementById('settings-link');
     const adminLink = document.getElementById('admin-link');
     const logoutBtn = document.getElementById('logout-btn');
     const proPanel = document.getElementById('pro-panel');
@@ -263,6 +265,7 @@
         btn.disabled = true;
         discoverLink.classList.add('hidden');
         profileLink.classList.add('hidden');
+        settingsLink.classList.add('hidden');
         adminLink.classList.add('hidden');
         sessionPlan.textContent = '';
         clearProMessage();
@@ -278,8 +281,10 @@
         ? 'Unlimited generations'
         : `${generation.monthlyRemaining} generations left this month`;
       sessionPlan.textContent = `${planName.toUpperCase()} · ${remainingText}`;
-      discoverLink.classList.remove('hidden');
+      const canUseInfiniteDiscovery = currentUser.role === 'admin' || !!currentUser.plan?.isPro;
+      discoverLink.classList.toggle('hidden', !canUseInfiniteDiscovery);
       profileLink.classList.remove('hidden');
+      settingsLink.classList.remove('hidden');
       adminLink.classList.toggle('hidden', currentUser.role !== 'admin');
       input.disabled = false;
       btn.disabled = false;
@@ -333,6 +338,7 @@
         setAuthState({
           userId: authData.userId,
           username: authData.username,
+          profilePictureUrl: authData.profilePictureUrl,
           role: authData.role,
           plan: authData.plan,
           generation: authData.generation,
