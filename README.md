@@ -54,7 +54,7 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
   - Key types: `monthly` (default), `annual`, `permanent`
   - Users redeem keys from the home page (or enter a key during sign-up)
 - Generation limits:
-  - Admin: `50` requests/minute by default
+  - Admin: `Infinite` requests/minute by default
   - Free users: `10` generations/month
   - Pro users: `100` generations/month
 
