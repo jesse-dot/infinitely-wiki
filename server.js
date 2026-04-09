@@ -41,7 +41,7 @@ const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 128;
-const MAX_STORED_ARTICLE_ACTIONS = 5000;
+const MAX_STORED_ARTICLE_SLUGS = 5000;
 const TANGENTIAL_SELECTION_START = 0.25;
 const TANGENTIAL_SELECTION_END = 0.75;
 const INFINITE_SCROLL_ROOT_MARGIN = '600px 0px 600px 0px';
@@ -814,18 +814,22 @@ function sanitizeStoredArticleSlugList(value) {
       .map((slug) => String(slug || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
       .filter(Boolean)
   );
-  return Array.from(unique).slice(0, MAX_STORED_ARTICLE_ACTIONS);
+  return Array.from(unique).slice(0, MAX_STORED_ARTICLE_SLUGS);
 }
 
 function ensureArticleActionsState(userRecord) {
   let changed = false;
   const liked = sanitizeStoredArticleSlugList(userRecord.likedArticles);
   const saved = sanitizeStoredArticleSlugList(userRecord.savedArticles);
-  if (!Array.isArray(userRecord.likedArticles) || liked.join('|') !== userRecord.likedArticles.join('|')) {
+  const currentLiked = Array.isArray(userRecord.likedArticles) ? userRecord.likedArticles : [];
+  const currentSaved = Array.isArray(userRecord.savedArticles) ? userRecord.savedArticles : [];
+  const likedChanged = currentLiked.length !== liked.length || liked.some((slug, index) => currentLiked[index] !== slug);
+  const savedChanged = currentSaved.length !== saved.length || saved.some((slug, index) => currentSaved[index] !== slug);
+  if (!Array.isArray(userRecord.likedArticles) || likedChanged) {
     userRecord.likedArticles = liked;
     changed = true;
   }
-  if (!Array.isArray(userRecord.savedArticles) || saved.join('|') !== userRecord.savedArticles.join('|')) {
+  if (!Array.isArray(userRecord.savedArticles) || savedChanged) {
     userRecord.savedArticles = saved;
     changed = true;
   }
@@ -2281,7 +2285,12 @@ function escapeHtml(str) {
 }
 
 function safeJsonForScript(value) {
-  return JSON.stringify(value).replace(/</g, '\\u003c');
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 app.listen(PORT, HOST, () => {
