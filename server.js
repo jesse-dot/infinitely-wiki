@@ -45,6 +45,7 @@ const MAX_STORED_ARTICLE_ACTIONS = 5000;
 const TANGENTIAL_SELECTION_START = 0.25;
 const TANGENTIAL_SELECTION_END = 0.75;
 const INFINITE_SCROLL_ROOT_MARGIN = '600px 0px 600px 0px';
+// Cache object is reassigned whenever wiki file signatures change.
 let wikiRelationshipCache = {
   signature: '',
   records: [],
@@ -59,6 +60,8 @@ const BADGE_DEFINITIONS = [
   { id: 'scroll-100', category: 'scroll', threshold: 100, name: 'Infinite Voyager', description: 'Discover 100 articles via infinite scroll.' },
 ];
 const MAX_COMMENT_LENGTH = 1000;
+const MAX_COMMENTS_PER_ARTICLE = 1000;
+const MAX_SANITIZED_SLUGS = 1000;
 
 function parseTrustProxy(value) {
   const raw = String(value || '').trim();
@@ -560,8 +563,8 @@ function addArticleComment(slug, authorId, body) {
   };
   if (!Array.isArray(record.comments)) record.comments = [];
   record.comments.push(comment);
-  if (record.comments.length > 1000) {
-    record.comments = record.comments.slice(-1000);
+  if (record.comments.length > MAX_COMMENTS_PER_ARTICLE) {
+    record.comments = record.comments.slice(-MAX_COMMENTS_PER_ARTICLE);
   }
   saveArticleState();
   return { comment };
@@ -738,7 +741,7 @@ function sanitizeSlugList(value) {
     .split(',')
     .map((slug) => slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
     .filter(Boolean)
-    .slice(0, 1000);
+    .slice(0, MAX_SANITIZED_SLUGS);
 }
 
 function sanitizeStoredArticleSlugList(value) {
@@ -1285,7 +1288,7 @@ app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), (req, res) => {
 
     return res.json({
       next: nextPage
-        ? { slug: nextPage.slug, title: nextPage.title, score: Number(nextPage.score.toFixed(4)) }
+        ? { slug: nextPage.slug, title: nextPage.title, score: Math.round(nextPage.score * 10000) / 10000 }
         : null,
     });
   } catch (err) {
@@ -1461,6 +1464,7 @@ app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
       const ROOT_MARGIN = ${rootMarginJson};
       const MAX_WINDOWED_CARDS = 6;
       const ESTIMATED_CARD_HEIGHT = 900;
+      const COMMENT_MAX_LENGTH = ${MAX_COMMENT_LENGTH};
       let currentRelationTitle = streamTitle;
       let loading = false;
       let done = false;
@@ -1659,7 +1663,7 @@ app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
             '<h2 class="wiki-talk-heading">Talk</h2>' +
             '<div class="wiki-comments-list" data-slug="' + escapeHtml(card.slug) + '">' + renderCommentsMarkup(card.slug) + '</div>' +
             '<form class="wiki-comment-form" data-slug="' + escapeHtml(card.slug) + '">' +
-              '<textarea class="wiki-comment-input" name="body" maxlength="${MAX_COMMENT_LENGTH}" placeholder="Add a comment…" required></textarea>' +
+              '<textarea class="wiki-comment-input" name="body" maxlength="' + COMMENT_MAX_LENGTH + '" placeholder="Add a comment…" required></textarea>' +
               '<button type="submit" class="search-btn wiki-comment-submit">Post comment</button>' +
             '</form>' +
           '</section>'
@@ -1834,6 +1838,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   const generator = getArticleGeneratorInfo(safe.sanitized);
   const slugJson = JSON.stringify(safe.sanitized);
   const generatorJson = JSON.stringify(generator);
+  const commentMaxLengthAttr = String(MAX_COMMENT_LENGTH);
 
   return res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -1859,7 +1864,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
       <h2 class="wiki-talk-heading">Talk</h2>
       <div class="wiki-comments-list" id="wiki-comments-list"></div>
       <form class="wiki-comment-form" id="wiki-comment-form">
-        <textarea class="wiki-comment-input" id="wiki-comment-input" maxlength="${MAX_COMMENT_LENGTH}" placeholder="Add a comment…" required></textarea>
+        <textarea class="wiki-comment-input" id="wiki-comment-input" maxlength="${commentMaxLengthAttr}" placeholder="Add a comment…" required></textarea>
         <button type="submit" class="search-btn wiki-comment-submit" id="wiki-comment-submit">Post comment</button>
       </form>
     </section>
