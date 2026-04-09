@@ -9,11 +9,6 @@ An AI-powered encyclopedia that generates Wikipedia-style articles on any topic 
 - ⚠️ Every article displays an AI-generated content warning banner at the top
 - 💾 Generated articles are saved to disk and served on subsequent visits without re-generating
 - 🗂️ Landing page lists all previously generated articles
-- ♾️ A separate **Infinite Discovery** page supports virtualized infinite scroll across tangentially related existing articles
-- ❤️ Users can like and save articles while browsing infinite scroll
-- 👤 User profile pages show generation/scroll stats and earned badges
-- 💬 Articles include talk-page style comments
-- 🙋 Article views show which user generated the article, linked to their profile
 - 🛡️ First created account is auto-assigned Admin
 - 🧰 Admin Panel for promoting users to admin and generating Pro keys
 - 🔑 Pro plan keys can be generated as monthly, annual, or permanent and redeemed by users
@@ -46,11 +41,7 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 2. Type any topic in the search bar and click **Generate**
 3. The server calls the Gemma AI model and saves the article as a Markdown file in `wiki-pages/`
 4. You are redirected to the rendered article page with an AI warning banner
-5. Open **Infinite Discovery** from the signed-in session panel to explore tangentially related existing articles (no new generation)
-6. Like or save any article card as you browse
-7. Visit your profile page to see progress stats and earned badges
-8. Use the talk section on each article to comment
-9. Previously generated articles appear in the "Recently Generated Articles" list
+5. Previously generated articles appear in the "Recently Generated Articles" list
 
 ### Accounts and Permissions
 
