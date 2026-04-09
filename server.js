@@ -412,7 +412,9 @@ const readLimiter = rateLimit({
 
 function getRateLimitKey(req) {
   const session = getSessionUser(req);
-  return session?.userId || ipKeyGenerator(req.ip || req.socket?.remoteAddress || '');
+  if (session?.userId) return session.userId;
+  const ip = req.ip || req.socket?.remoteAddress;
+  return ip ? ipKeyGenerator(ip) : 'ip:unknown';
 }
 
 const adminGenerateLimiter = rateLimit({
