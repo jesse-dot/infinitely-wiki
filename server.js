@@ -413,8 +413,21 @@ const readLimiter = rateLimit({
 function getRateLimitKey(req) {
   const session = getSessionUser(req);
   if (session?.userId) return session.userId;
-  const ip = req.ip || req.socket?.remoteAddress;
-  return ip ? ipKeyGenerator(ip) : 'ip:unknown';
+  const forwardedFor = typeof req.headers['x-forwarded-for'] === 'string'
+    ? req.headers['x-forwarded-for'].split(',')[0].trim()
+    : '';
+  const ip = req.ip
+    || req.socket?.remoteAddress
+    || (typeof req.headers['cf-connecting-ip'] === 'string' ? req.headers['cf-connecting-ip'].trim() : '')
+    || (typeof req.headers['x-real-ip'] === 'string' ? req.headers['x-real-ip'].trim() : '')
+    || forwardedFor;
+  if (ip) return ipKeyGenerator(ip);
+  const fallbackFingerprint = crypto
+    .createHash('sha256')
+    .update(`${req.headers['user-agent'] || ''}|${req.headers['accept-language'] || ''}|${req.socket?.remoteFamily || ''}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `ip:unknown:${fallbackFingerprint}`;
 }
 
 const adminGenerateLimiter = rateLimit({
