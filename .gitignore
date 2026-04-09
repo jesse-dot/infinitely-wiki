@@ -1,4 +1,5 @@
 node_modules/
 wiki-pages/*.md
 data/*.json
+public/uploads/profile-images/*
 .env

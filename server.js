@@ -21,6 +21,8 @@ const HOST = process.env.HOST || '0.0.0.0';
 const TRUST_PROXY = process.env.TRUST_PROXY;
 const WIKI_DIR = path.join(__dirname, 'wiki-pages');
 const DATA_DIR = path.join(__dirname, 'data');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const PROFILE_IMAGE_UPLOAD_DIR = path.join(PUBLIC_DIR, 'uploads', 'profile-images');
 const AUTH_STATE_FILE = path.join(DATA_DIR, 'auth-state.json');
 const ARTICLE_STATE_FILE = path.join(DATA_DIR, 'article-state.json');
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
@@ -63,6 +65,7 @@ const MAX_COMMENT_LENGTH = 1000;
 const MAX_COMMENTS_PER_ARTICLE = 1000;
 const MAX_SANITIZED_SLUGS = 1000;
 const MAX_PROFILE_PICTURE_URL_LENGTH = 500;
+const MAX_PROFILE_IMAGE_UPLOAD_BYTES = parsePositiveInt(process.env.MAX_PROFILE_IMAGE_UPLOAD_BYTES, 2 * 1024 * 1024);
 
 function parseTrustProxy(value) {
   const raw = String(value || '').trim();
@@ -83,9 +86,12 @@ if (!fs.existsSync(WIKI_DIR)) {
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+if (!fs.existsSync(PROFILE_IMAGE_UPLOAD_DIR)) {
+  fs.mkdirSync(PROFILE_IMAGE_UPLOAD_DIR, { recursive: true });
+}
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.static(PUBLIC_DIR));
 
 function loadAuthState() {
   const emptyState = { users: Object.create(null), proKeys: Object.create(null), sessions: Object.create(null) };
@@ -230,7 +236,17 @@ function validatePasswordInput(value) {
   return { password: raw };
 }
 
+function sanitizeLocalProfileImagePath(value) {
+  const raw = String(value || '').trim();
+  if (!raw.startsWith('/uploads/profile-images/')) return '';
+  const filename = raw.slice('/uploads/profile-images/'.length);
+  if (!filename || !/^[a-zA-Z0-9._-]+$/.test(filename)) return '';
+  return `/uploads/profile-images/${filename}`;
+}
+
 function sanitizeProfilePictureUrl(value) {
+  const localPath = sanitizeLocalProfileImagePath(value);
+  if (localPath) return localPath;
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (raw.length > MAX_PROFILE_PICTURE_URL_LENGTH) return '';
@@ -247,6 +263,8 @@ function sanitizeProfilePictureUrl(value) {
 }
 
 function validateProfilePictureInput(value) {
+  const localPath = sanitizeLocalProfileImagePath(value);
+  if (localPath) return { profilePictureUrl: localPath };
   const raw = String(value || '').trim();
   if (!raw) return { profilePictureUrl: '' };
   if (raw.length > MAX_PROFILE_PICTURE_URL_LENGTH) {
@@ -262,6 +280,57 @@ function validateProfilePictureInput(value) {
     return { error: 'Profile picture URL must use http or https.' };
   }
   return { profilePictureUrl: parsed.toString() };
+}
+
+function removeLocalProfileImageIfOwned(profilePictureUrl) {
+  const localPath = sanitizeLocalProfileImagePath(profilePictureUrl);
+  if (!localPath) return;
+  const absolute = path.resolve(PUBLIC_DIR, `.${localPath}`);
+  const uploadBase = path.resolve(PROFILE_IMAGE_UPLOAD_DIR);
+  const relative = path.relative(uploadBase, absolute);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return;
+  if (!fs.existsSync(absolute)) return;
+  try {
+    fs.unlinkSync(absolute);
+  } catch {
+    // Ignore cleanup failures and keep current file reference behavior.
+  }
+}
+
+function saveProfileImageFromDataUrl(dataUrl) {
+  const raw = String(dataUrl || '').trim();
+  const match = raw.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,([a-zA-Z0-9+/=]+)$/);
+  if (!match) {
+    return { error: 'Profile image must be a PNG, JPEG, GIF, or WebP file.' };
+  }
+  const mimeType = match[1];
+  const base64 = match[2];
+  let buffer;
+  try {
+    buffer = Buffer.from(base64, 'base64');
+  } catch {
+    return { error: 'Profile image upload data is invalid.' };
+  }
+  if (!buffer || buffer.length === 0) {
+    return { error: 'Profile image file is empty.' };
+  }
+  if (buffer.length > MAX_PROFILE_IMAGE_UPLOAD_BYTES) {
+    return { error: `Profile image is too large (max ${Math.floor(MAX_PROFILE_IMAGE_UPLOAD_BYTES / (1024 * 1024))} MB).` };
+  }
+  const extensionByMime = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  };
+  const extension = extensionByMime[mimeType];
+  if (!extension) {
+    return { error: 'Unsupported profile image format.' };
+  }
+  const filename = `${crypto.randomUUID()}.${extension}`;
+  const absolutePath = path.join(PROFILE_IMAGE_UPLOAD_DIR, filename);
+  fs.writeFileSync(absolutePath, buffer);
+  return { profilePictureUrl: `/uploads/profile-images/${filename}` };
 }
 
 function hashPassword(password, salt, iterations = PASSWORD_HASH_ITERATIONS) {
@@ -1131,9 +1200,13 @@ app.get('/settings', readLimiter, requireAuth(), (req, res) => {
       </form>
       <p id="settings-pro-message" class="error-msg hidden" role="status"></p>
       <form id="settings-avatar-form" class="auth-form">
-        <label for="settings-avatar-url">Profile picture URL</label>
-        <input id="settings-avatar-url" class="search-input" type="url" maxlength="${MAX_PROFILE_PICTURE_URL_LENGTH}" placeholder="https://example.com/avatar.png" />
-        <button class="search-btn" type="submit">Save profile picture</button>
+        <label for="settings-avatar-file">Profile picture image</label>
+        <img id="settings-avatar-preview" class="profile-avatar hidden" alt="Profile picture preview" />
+        <input id="settings-avatar-file" class="search-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" />
+        <div class="settings-avatar-actions">
+          <button class="search-btn" type="submit">Upload profile picture</button>
+          <button class="logout-btn" type="button" id="settings-avatar-clear-btn">Remove picture</button>
+        </div>
       </form>
       <p id="settings-avatar-message" class="error-msg hidden" role="status"></p>
       <p><a class="wiki-stream-link" href="/profile">View my profile</a></p>
@@ -1145,8 +1218,11 @@ app.get('/settings', readLimiter, requireAuth(), (req, res) => {
       const proInput = document.getElementById('settings-pro-key');
       const proMessage = document.getElementById('settings-pro-message');
       const avatarForm = document.getElementById('settings-avatar-form');
-      const avatarInput = document.getElementById('settings-avatar-url');
+      const avatarInput = document.getElementById('settings-avatar-file');
+      const avatarPreview = document.getElementById('settings-avatar-preview');
+      const avatarClearBtn = document.getElementById('settings-avatar-clear-btn');
       const avatarMessage = document.getElementById('settings-avatar-message');
+      const MAX_UPLOAD_BYTES = ${MAX_PROFILE_IMAGE_UPLOAD_BYTES};
 
       function showMessage(el, text, isError) {
         el.textContent = text;
@@ -1155,12 +1231,22 @@ app.get('/settings', readLimiter, requireAuth(), (req, res) => {
         el.classList.toggle('success-msg', !isError);
       }
 
+      function syncAvatarPreview(url) {
+        if (!url) {
+          avatarPreview.classList.add('hidden');
+          avatarPreview.removeAttribute('src');
+          return;
+        }
+        avatarPreview.src = url;
+        avatarPreview.classList.remove('hidden');
+      }
+
       async function loadSettings() {
         try {
           const res = await fetch('/api/auth/me');
           if (!res.ok) return;
           const data = await res.json();
-          avatarInput.value = data.profilePictureUrl || '';
+          syncAvatarPreview(data.profilePictureUrl || '');
         } catch {
           // Ignore load failures.
         }
@@ -1190,21 +1276,63 @@ app.get('/settings', readLimiter, requireAuth(), (req, res) => {
 
       avatarForm.addEventListener('submit', async (event) => {
         event.preventDefault();
+        const file = avatarInput.files && avatarInput.files[0];
+        if (!file) {
+          showMessage(avatarMessage, 'Please choose an image file to upload.', true);
+          return;
+        }
+        if (file.size > MAX_UPLOAD_BYTES) {
+          showMessage(avatarMessage, 'Image is too large. Please choose a smaller file.', true);
+          return;
+        }
+        let imageDataUrl = '';
         try {
-          const res = await fetch('/api/account/profile-picture', {
+          imageDataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('read-failed'));
+            reader.readAsDataURL(file);
+          });
+        } catch {
+          showMessage(avatarMessage, 'Could not read selected image file.', true);
+          return;
+        }
+        try {
+          const res = await fetch('/api/account/profile-picture/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ profilePictureUrl: avatarInput.value.trim() }),
+            body: JSON.stringify({ imageDataUrl }),
           });
           const data = await res.json();
           if (!res.ok) {
             showMessage(avatarMessage, data.error || 'Could not save profile picture.', true);
             return;
           }
-          avatarInput.value = data.profilePictureUrl || '';
-          showMessage(avatarMessage, 'Profile picture saved.', false);
+          avatarInput.value = '';
+          syncAvatarPreview(data.profilePictureUrl || '');
+          showMessage(avatarMessage, 'Profile picture uploaded.', false);
         } catch {
           showMessage(avatarMessage, 'Network error while saving profile picture.', true);
+        }
+      });
+
+      avatarClearBtn.addEventListener('click', async () => {
+        try {
+          const res = await fetch('/api/account/profile-picture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profilePictureUrl: '' }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showMessage(avatarMessage, data.error || 'Could not remove profile picture.', true);
+            return;
+          }
+          avatarInput.value = '';
+          syncAvatarPreview(data.profilePictureUrl || '');
+          showMessage(avatarMessage, 'Profile picture removed.', false);
+        } catch {
+          showMessage(avatarMessage, 'Network error while removing profile picture.', true);
         }
       });
 
@@ -1390,9 +1518,27 @@ app.post('/api/account/profile-picture', writeLimiter, requireAuth(), (req, res)
   if (result.error) {
     return res.status(400).json({ error: result.error });
   }
+  const previousProfilePictureUrl = sanitizeProfilePictureUrl(req.userRecord.profilePictureUrl);
+  if (previousProfilePictureUrl && previousProfilePictureUrl !== result.profilePictureUrl) {
+    removeLocalProfileImageIfOwned(previousProfilePictureUrl);
+  }
   req.userRecord.profilePictureUrl = result.profilePictureUrl;
   saveAuthState();
   return res.json({ success: true, profilePictureUrl: req.userRecord.profilePictureUrl });
+});
+
+app.post('/api/account/profile-picture/upload', writeLimiter, requireAuth(), (req, res) => {
+  const upload = saveProfileImageFromDataUrl(req.body && req.body.imageDataUrl);
+  if (upload.error) {
+    return res.status(400).json({ error: upload.error });
+  }
+  const previousProfilePictureUrl = sanitizeProfilePictureUrl(req.userRecord.profilePictureUrl);
+  if (previousProfilePictureUrl && previousProfilePictureUrl !== upload.profilePictureUrl) {
+    removeLocalProfileImageIfOwned(previousProfilePictureUrl);
+  }
+  req.userRecord.profilePictureUrl = upload.profilePictureUrl;
+  saveAuthState();
+  return res.status(201).json({ success: true, profilePictureUrl: req.userRecord.profilePictureUrl });
 });
 
 // List all saved wiki pages
@@ -1779,7 +1925,7 @@ app.get('/discover/:slug', readLimiter, requireAuth(), requireProInfiniteScroll,
       }
 
       function formatCommentBody(text) {
-        return escapeHtml(String(text || '')).replace(/\n/g, '<br>');
+        return escapeHtml(String(text || '')).replace(/\\n/g, '<br>');
       }
 
       function renderCommentsMarkup(slug) {
@@ -2191,7 +2337,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
       }
 
       function formatCommentBody(text) {
-        return escapeHtml(text).replace(/\n/g, '<br>');
+        return escapeHtml(text).replace(/\\n/g, '<br>');
       }
 
       function renderComments(comments) {

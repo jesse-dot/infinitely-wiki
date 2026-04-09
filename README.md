@@ -17,7 +17,7 @@ An AI-powered encyclopedia that generates Wikipedia-style articles on any topic 
 - 🛡️ First created account is auto-assigned Admin
 - 🧰 Admin Panel for promoting users to admin and generating Pro keys
 - 🔑 Pro plan keys can be generated as monthly, annual, or permanent and redeemed by users
-- ⚙️ Account settings page to redeem Pro keys and update profile picture URL
+- ⚙️ Account settings page to redeem Pro keys and upload/update profile pictures
 - 📊 Monthly generation quotas by plan (Free vs Pro), plus higher admin request throughput
 
 ## Prerequisites

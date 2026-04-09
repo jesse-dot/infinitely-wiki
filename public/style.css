@@ -637,6 +637,12 @@ body.landing {
   font-size: 2rem;
 }
 
+.settings-avatar-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .profile-meta {
   color: var(--color-text-muted);
   margin-bottom: 1rem;
