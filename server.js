@@ -40,6 +40,15 @@ const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 128;
+const MAX_STORED_ARTICLE_ACTIONS = 5000;
+const TANGENTIAL_SELECTION_START = 0.25;
+const TANGENTIAL_SELECTION_END = 0.75;
+const INFINITE_SCROLL_ROOT_MARGIN = '600px 0px 600px 0px';
+let wikiRelationshipCache = {
+  signature: '',
+  records: [],
+  graph: new Map(),
+};
 
 function parseTrustProxy(value) {
   const raw = String(value || '').trim();
@@ -434,6 +443,15 @@ const adminPanelLimiter = rateLimit({
   message: { error: 'Too many admin requests. Please try again later.' },
 });
 
+const writeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => getRateLimitKey(req),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many write requests. Please try again later.' },
+});
+
 // Convert a topic string into a URL-safe slug
 function slugify(text) {
   return text
@@ -469,7 +487,7 @@ const RELATIONSHIP_STOP_WORDS = new Set([
   'our', 'its', 'who', 'what', 'when', 'where', 'how', 'why', 'which', 'can', 'may', 'such', 'other',
   'some', 'more', 'most', 'many', 'each', 'over', 'under', 'during', 'after', 'before', 'between',
   'through', 'within', 'without', 'using', 'used', 'use', 'these', 'those', 'because', 'while', 'been',
-  'will', 'would', 'could', 'should', 'onto', 'upon', 'like', 'than', 'very', 'much', 'both', 'only',
+  'will', 'would', 'could', 'should', 'onto', 'upon', 'like', 'very', 'much', 'both', 'only',
 ]);
 
 function readWikiPageRecords() {
@@ -535,8 +553,8 @@ function pickTangentialRelatedPage(relatedPages, excludedSlugs) {
   const available = relatedPages.filter((page) => !excludedSlugs.has(page.slug));
   if (available.length === 0) return null;
   if (available.length === 1) return available[0];
-  const start = Math.floor(available.length * 0.25);
-  const end = Math.max(start + 1, Math.floor(available.length * 0.75));
+  const start = Math.floor(available.length * TANGENTIAL_SELECTION_START);
+  const end = Math.max(start + 1, Math.floor(available.length * TANGENTIAL_SELECTION_END));
   const tangentialPool = available.slice(start, end);
   const pool = tangentialPool.length > 0 ? tangentialPool : available;
   return pool[Math.floor(Math.random() * pool.length)];
@@ -549,6 +567,69 @@ function sanitizeSlugList(value) {
     .map((slug) => slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
     .filter(Boolean)
     .slice(0, 1000);
+}
+
+function sanitizeStoredArticleSlugList(value) {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set(
+    value
+      .map((slug) => String(slug || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
+      .filter(Boolean)
+  );
+  return Array.from(unique).slice(0, MAX_STORED_ARTICLE_ACTIONS);
+}
+
+function ensureArticleActionsState(userRecord) {
+  let changed = false;
+  const liked = sanitizeStoredArticleSlugList(userRecord.likedArticles);
+  const saved = sanitizeStoredArticleSlugList(userRecord.savedArticles);
+  if (!Array.isArray(userRecord.likedArticles) || liked.join('|') !== userRecord.likedArticles.join('|')) {
+    userRecord.likedArticles = liked;
+    changed = true;
+  }
+  if (!Array.isArray(userRecord.savedArticles) || saved.join('|') !== userRecord.savedArticles.join('|')) {
+    userRecord.savedArticles = saved;
+    changed = true;
+  }
+  if (changed) saveAuthState();
+}
+
+function getArticleActionsForUser(userRecord) {
+  ensureArticleActionsState(userRecord);
+  return {
+    likedSlugs: userRecord.likedArticles,
+    savedSlugs: userRecord.savedArticles,
+  };
+}
+
+function updateArticleAction(userRecord, slug, actionKey, enabled) {
+  ensureArticleActionsState(userRecord);
+  const list = actionKey === 'liked' ? userRecord.likedArticles : userRecord.savedArticles;
+  const index = list.indexOf(slug);
+  if (enabled && index === -1) {
+    list.push(slug);
+    saveAuthState();
+  } else if (!enabled && index !== -1) {
+    list.splice(index, 1);
+    saveAuthState();
+  }
+}
+
+function getWikiRelationshipData() {
+  const files = fs.readdirSync(WIKI_DIR).filter((file) => file.endsWith('.md')).sort();
+  const signature = files.map((file) => {
+    const stat = fs.statSync(path.join(WIKI_DIR, file));
+    return `${file}:${stat.size}:${stat.mtimeMs}`;
+  }).join('|');
+
+  if (wikiRelationshipCache.signature === signature) {
+    return wikiRelationshipCache;
+  }
+
+  const records = readWikiPageRecords();
+  const graph = buildRelationshipGraph(records);
+  wikiRelationshipCache = { signature, records, graph };
+  return wikiRelationshipCache;
 }
 
 function requireAuth(allowedRoles = []) {
@@ -846,6 +927,63 @@ app.get('/api/wiki/:slug/article', readLimiter, requireAuth(), (req, res) => {
   return res.json({ slug: safe.sanitized, title, htmlContent });
 });
 
+app.get('/api/wiki/actions', readLimiter, requireAuth(), (req, res) => {
+  return res.json(getArticleActionsForUser(req.userRecord));
+});
+
+app.get('/api/wiki/:slug/actions', readLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).json({ error: 'Invalid page slug.' });
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).json({ error: 'Page not found.' });
+  }
+  const actions = getArticleActionsForUser(req.userRecord);
+  return res.json({
+    slug: safe.sanitized,
+    liked: actions.likedSlugs.includes(safe.sanitized),
+    saved: actions.savedSlugs.includes(safe.sanitized),
+  });
+});
+
+app.post('/api/wiki/:slug/actions', writeLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).json({ error: 'Invalid page slug.' });
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).json({ error: 'Page not found.' });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const hasLiked = Object.hasOwn(body, 'liked');
+  const hasSaved = Object.hasOwn(body, 'saved');
+  if (!hasLiked && !hasSaved) {
+    return res.status(400).json({ error: 'No action updates provided.' });
+  }
+  if (hasLiked && typeof body.liked !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid liked value.' });
+  }
+  if (hasSaved && typeof body.saved !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid saved value.' });
+  }
+
+  if (hasLiked) {
+    updateArticleAction(req.userRecord, safe.sanitized, 'liked', body.liked);
+  }
+  if (hasSaved) {
+    updateArticleAction(req.userRecord, safe.sanitized, 'saved', body.saved);
+  }
+
+  const actions = getArticleActionsForUser(req.userRecord);
+  return res.json({
+    slug: safe.sanitized,
+    liked: actions.likedSlugs.includes(safe.sanitized),
+    saved: actions.savedSlugs.includes(safe.sanitized),
+  });
+});
+
 app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), (req, res) => {
   const safe = safeWikiPath(req.params.slug);
   if (!safe) {
@@ -856,17 +994,12 @@ app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), (req, res) => {
   }
 
   try {
-    const pageRecords = readWikiPageRecords();
-    const pageBySlug = new Map(pageRecords.map((page) => [page.slug, page]));
-    if (!pageBySlug.has(safe.sanitized)) {
-      return res.status(404).json({ error: 'Page not found.' });
-    }
-
+    const relationshipData = getWikiRelationshipData();
+    const pageRecords = relationshipData.records;
     const excludedSlugs = new Set(sanitizeSlugList(req.query.exclude));
     excludedSlugs.add(safe.sanitized);
 
-    const relationshipGraph = buildRelationshipGraph(pageRecords);
-    const relatedPages = relationshipGraph.get(safe.sanitized) || [];
+    const relatedPages = relationshipData.graph.get(safe.sanitized) || [];
     let nextPage = pickTangentialRelatedPage(relatedPages, excludedSlugs);
 
     if (!nextPage) {
@@ -965,6 +1098,8 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   const htmlContent = marked(markdown);
   const initialSlugJson = JSON.stringify(safe.sanitized);
   const initialTitleJson = JSON.stringify(title);
+  const initialHtmlJson = JSON.stringify(htmlContent);
+  const rootMarginJson = JSON.stringify(INFINITE_SCROLL_ROOT_MARGIN);
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -980,9 +1115,9 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
     <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
   </header>
   <main class="wiki-stream" id="wiki-stream">
-    <article class="wiki-article wiki-article-card" data-slug="${escapeHtml(safe.sanitized)}">
-      ${htmlContent}
-    </article>
+    <div class="wiki-virtual-spacer" id="wiki-virtual-top-spacer" aria-hidden="true"></div>
+    <section class="wiki-cards-container" id="wiki-cards-container" aria-live="polite"></section>
+    <div class="wiki-virtual-spacer" id="wiki-virtual-bottom-spacer" aria-hidden="true"></div>
     <div class="wiki-scroll-status" id="wiki-scroll-status" aria-live="polite">Scroll down to discover a tangentially related article from your existing pages.</div>
     <div class="wiki-scroll-sentinel" id="wiki-scroll-sentinel" aria-hidden="true"></div>
   </main>
@@ -994,12 +1129,25 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   <script>
     (() => {
       const stream = document.getElementById('wiki-stream');
+      const cardsContainer = document.getElementById('wiki-cards-container');
+      const topSpacer = document.getElementById('wiki-virtual-top-spacer');
+      const bottomSpacer = document.getElementById('wiki-virtual-bottom-spacer');
       const status = document.getElementById('wiki-scroll-status');
       const sentinel = document.getElementById('wiki-scroll-sentinel');
       const loadedSlugs = new Set([${initialSlugJson}]);
+      const likedSlugs = new Set();
+      const savedSlugs = new Set();
+      const pendingActions = new Set();
       const streamTitle = ${initialTitleJson};
+      const initialHtml = ${initialHtmlJson};
+      const ROOT_MARGIN = ${rootMarginJson};
+      const MAX_WINDOWED_CARDS = 6;
+      const ESTIMATED_CARD_HEIGHT = 900;
+      let currentRelationTitle = streamTitle;
       let loading = false;
       let done = false;
+      const cards = [{ slug: ${initialSlugJson}, title: streamTitle, htmlContent: initialHtml, label: '', showLink: false }];
+      const cardHeights = [ESTIMATED_CARD_HEIGHT];
 
       function setStatus(text) {
         status.textContent = text;
@@ -1009,6 +1157,152 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
         const div = document.createElement('div');
         div.appendChild(document.createTextNode(String(text || '')));
         return div.innerHTML;
+      }
+
+      function getActionState(action, slug) {
+        return action === 'like' ? likedSlugs.has(slug) : savedSlugs.has(slug);
+      }
+
+      function setActionState(action, slug, enabled) {
+        const target = action === 'like' ? likedSlugs : savedSlugs;
+        if (enabled) {
+          target.add(slug);
+        } else {
+          target.delete(slug);
+        }
+      }
+
+      function getActionPendingKey(action, slug) {
+        return action + ':' + slug;
+      }
+
+      function renderActionButtons(slug) {
+        const liked = likedSlugs.has(slug);
+        const saved = savedSlugs.has(slug);
+        return '' +
+          '<div class="wiki-article-actions">' +
+          '<button type="button" class="wiki-action-btn' + (liked ? ' is-active' : '') + '" data-action="like" data-slug="' + escapeHtml(slug) + '" aria-pressed="' + String(liked) + '">' + (liked ? '♥ Liked' : '♡ Like') + '</button>' +
+          '<button type="button" class="wiki-action-btn' + (saved ? ' is-active' : '') + '" data-action="save" data-slug="' + escapeHtml(slug) + '" aria-pressed="' + String(saved) + '">' + (saved ? '💾 Saved' : '💾 Save') + '</button>' +
+          '</div>';
+      }
+
+      function syncActionButtonsForSlug(slug) {
+        const buttons = cardsContainer.querySelectorAll('.wiki-action-btn[data-slug]');
+        for (const button of buttons) {
+          const buttonSlug = button.getAttribute('data-slug');
+          if (buttonSlug !== slug) continue;
+          const action = button.getAttribute('data-action');
+          const active = getActionState(action, slug);
+          const pending = pendingActions.has(getActionPendingKey(action, slug));
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+          button.textContent = action === 'like'
+            ? (active ? '♥ Liked' : '♡ Like')
+            : (active ? '💾 Saved' : '💾 Save');
+          button.disabled = pending;
+        }
+      }
+
+      function syncAllActionButtons() {
+        const slugs = new Set();
+        const buttons = cardsContainer.querySelectorAll('.wiki-action-btn[data-slug]');
+        for (const button of buttons) {
+          slugs.add(button.getAttribute('data-slug'));
+        }
+        for (const slug of slugs) {
+          syncActionButtonsForSlug(slug);
+        }
+      }
+
+      async function loadInitialActionState() {
+        try {
+          const res = await fetch('/api/wiki/actions');
+          if (!res.ok) return;
+          const data = await res.json();
+          const liked = Array.isArray(data.likedSlugs) ? data.likedSlugs : [];
+          const saved = Array.isArray(data.savedSlugs) ? data.savedSlugs : [];
+          for (const slug of liked) likedSlugs.add(slug);
+          for (const slug of saved) savedSlugs.add(slug);
+          syncAllActionButtons();
+        } catch (err) {
+          // Ignore action state load failures and continue browsing.
+        }
+      }
+
+      function sumCardHeights(endIndexExclusive) {
+        let total = 0;
+        for (let i = 0; i < endIndexExclusive; i += 1) {
+          total += cardHeights[i] || ESTIMATED_CARD_HEIGHT;
+        }
+        return total;
+      }
+
+      function renderCardMarkup(card, index) {
+        const parts = [];
+        if (card.label) {
+          parts.push('<p class="wiki-stream-label">' + escapeHtml(card.label) + '</p>');
+        }
+        if (card.showLink) {
+          parts.push(
+            '<p class="wiki-stream-link-wrap"><a class="wiki-stream-link" href="/wiki/' +
+              encodeURIComponent(card.slug) +
+              '">Open ' + escapeHtml(card.title || card.slug) + ' as a standalone page</a></p>'
+          );
+        }
+        parts.push(renderActionButtons(card.slug));
+        parts.push(card.htmlContent || '');
+        return '<article class="wiki-article wiki-article-card" data-index="' + index + '" data-slug="' + escapeHtml(card.slug) + '">' + parts.join('') + '</article>';
+      }
+
+      function renderVirtualWindow() {
+        const startIndex = Math.max(0, cards.length - MAX_WINDOWED_CARDS);
+        const visibleCards = cards.slice(startIndex);
+        topSpacer.style.height = sumCardHeights(startIndex) + 'px';
+        bottomSpacer.style.height = '0px';
+        cardsContainer.innerHTML = visibleCards
+          .map((card, offset) => renderCardMarkup(card, startIndex + offset))
+          .join('');
+        syncAllActionButtons();
+        requestAnimationFrame(() => {
+          const rendered = cardsContainer.querySelectorAll('.wiki-article-card[data-index]');
+          for (const cardElement of rendered) {
+            const index = Number(cardElement.getAttribute('data-index'));
+            if (!Number.isFinite(index)) continue;
+            cardHeights[index] = Math.max(cardElement.offsetHeight, 1);
+          }
+          topSpacer.style.height = sumCardHeights(startIndex) + 'px';
+        });
+      }
+
+      async function toggleAction(slug, action, nextValue) {
+        const pendingKey = getActionPendingKey(action, slug);
+        pendingActions.add(pendingKey);
+        syncActionButtonsForSlug(slug);
+        try {
+          const payload = action === 'like' ? { liked: nextValue } : { saved: nextValue };
+          const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/actions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            setStatus('Could not update article actions right now.');
+            return;
+          }
+          const data = await res.json();
+          if (typeof data.liked === 'boolean') {
+            setActionState('like', slug, data.liked);
+          }
+          if (typeof data.saved === 'boolean') {
+            setActionState('save', slug, data.saved);
+          }
+          syncActionButtonsForSlug(slug);
+        } catch (err) {
+          setStatus('Could not update article actions right now.');
+        } finally {
+          pendingActions.delete(pendingKey);
+          syncActionButtonsForSlug(slug);
+        }
       }
 
       async function loadNextTangentialPage() {
@@ -1047,17 +1341,17 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
           }
 
           loadedSlugs.add(articleData.slug);
-          const card = document.createElement('article');
-          card.className = 'wiki-article wiki-article-card';
-          card.setAttribute('data-slug', articleData.slug);
-          const label = loadedSlugs.size === 2
-            ? 'Tangentially related to ' + streamTitle
-            : 'Tangentially related to ' + (next.title || articleData.title || articleData.slug);
-          card.innerHTML =
-            '<p class="wiki-stream-label">' + escapeHtml(label) + '</p>' +
-            '<p class="wiki-stream-link-wrap"><a class="wiki-stream-link" href="/wiki/' + encodeURIComponent(articleData.slug) + '">Open ' + escapeHtml(articleData.title || articleData.slug) + ' as a standalone page</a></p>' +
-            articleData.htmlContent;
-          stream.insertBefore(card, status);
+          const label = 'Tangentially related to ' + currentRelationTitle;
+          cards.push({
+            slug: articleData.slug,
+            title: articleData.title || articleData.slug,
+            htmlContent: articleData.htmlContent,
+            label,
+            showLink: true,
+          });
+          cardHeights.push(ESTIMATED_CARD_HEIGHT);
+          currentRelationTitle = articleData.title || articleData.slug;
+          renderVirtualWindow();
           setStatus('Scroll for another related article.');
         } catch (err) {
           setStatus('Could not load more articles right now.');
@@ -1074,6 +1368,18 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
         }
       }, { rootMargin: '600px 0px 600px 0px' });
 
+      cardsContainer.addEventListener('click', (event) => {
+        const button = event.target.closest('.wiki-action-btn');
+        if (!button) return;
+        const slug = button.getAttribute('data-slug');
+        const action = button.getAttribute('data-action');
+        if (!slug || (action !== 'like' && action !== 'save')) return;
+        const nextValue = !getActionState(action, slug);
+        toggleAction(slug, action, nextValue);
+      });
+
+      renderVirtualWindow();
+      loadInitialActionState();
       observer.observe(sentinel);
     })();
   </script>

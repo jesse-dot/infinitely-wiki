@@ -10,6 +10,7 @@ An AI-powered encyclopedia that generates Wikipedia-style articles on any topic 
 - 💾 Generated articles are saved to disk and served on subsequent visits without re-generating
 - 🗂️ Landing page lists all previously generated articles
 - ♾️ Wiki pages support infinite scroll that follows a tangential relationship graph across existing articles
+- ❤️ Users can like and save articles while browsing infinite scroll
 - 🛡️ First created account is auto-assigned Admin
 - 🧰 Admin Panel for promoting users to admin and generating Pro keys
 - 🔑 Pro plan keys can be generated as monthly, annual, or permanent and redeemed by users
@@ -43,7 +44,8 @@ The server starts at **http://localhost:3000** (override with `PORT` env var).
 3. The server calls the Gemma AI model and saves the article as a Markdown file in `wiki-pages/`
 4. You are redirected to the rendered article page with an AI warning banner
 5. Scroll down on a wiki page to discover tangentially related topics from your existing saved articles (no new generation)
-6. Previously generated articles appear in the "Recently Generated Articles" list
+6. Like or save any article card as you browse
+7. Previously generated articles appear in the "Recently Generated Articles" list
 
 ### Accounts and Permissions
 
