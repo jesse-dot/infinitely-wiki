@@ -422,6 +422,48 @@ body.landing {
   flex: 1;
 }
 
+.wiki-stream {
+  width: 100%;
+}
+
+.wiki-article-card {
+  margin-bottom: 1.25rem;
+}
+
+.wiki-stream-label {
+  margin: 0 0 0.5rem 0;
+  font-family: var(--font-ui);
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.wiki-stream-link-wrap {
+  margin: 0 0 1rem 0;
+  font-family: var(--font-ui);
+}
+
+.wiki-stream-link {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.wiki-stream-link:hover {
+  text-decoration: underline;
+}
+
+.wiki-scroll-status {
+  max-width: var(--max-width);
+  margin: 0 auto 1rem;
+  padding: 0 2rem;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  font-family: var(--font-ui);
+}
+
+.wiki-scroll-sentinel {
+  height: 1px;
+}
+
 /* ── AI Warning Banner (rendered from blockquote) ── */
 .wiki-article blockquote {
   background: var(--color-warning-bg);

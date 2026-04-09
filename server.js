@@ -463,6 +463,94 @@ function extractTitle(content, fallback) {
   return match ? match[1] : fallback;
 }
 
+const RELATIONSHIP_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'about', 'also', 'have', 'has', 'had',
+  'their', 'there', 'them', 'they', 'then', 'than', 'were', 'was', 'are', 'but', 'not', 'you', 'your',
+  'our', 'its', 'who', 'what', 'when', 'where', 'how', 'why', 'which', 'can', 'may', 'such', 'other',
+  'some', 'more', 'most', 'many', 'each', 'over', 'under', 'during', 'after', 'before', 'between',
+  'through', 'within', 'without', 'using', 'used', 'use', 'these', 'those', 'because', 'while', 'been',
+  'will', 'would', 'could', 'should', 'onto', 'upon', 'like', 'than', 'very', 'much', 'both', 'only',
+]);
+
+function readWikiPageRecords() {
+  const files = fs.readdirSync(WIKI_DIR).filter((f) => f.endsWith('.md'));
+  return files.map((file) => {
+    const slug = path.basename(file, '.md');
+    const markdown = fs.readFileSync(path.join(WIKI_DIR, file), 'utf8');
+    const title = extractTitle(markdown, slug);
+    return { slug, title, markdown };
+  });
+}
+
+function extractRelationshipTerms(title, markdown) {
+  const text = `${title || ''}\n${markdown || ''}`
+    .toLowerCase()
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ');
+  const terms = text
+    .split(/[^a-z0-9]+/g)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 4 && !RELATIONSHIP_STOP_WORDS.has(term));
+  return new Set(terms);
+}
+
+function buildRelationshipGraph(pageRecords) {
+  const graph = new Map();
+  const records = pageRecords.map((page) => ({
+    ...page,
+    terms: extractRelationshipTerms(page.title, page.markdown),
+  }));
+
+  for (const page of records) {
+    graph.set(page.slug, []);
+  }
+
+  for (let i = 0; i < records.length; i += 1) {
+    for (let j = i + 1; j < records.length; j += 1) {
+      const a = records[i];
+      const b = records[j];
+      if (a.terms.size === 0 || b.terms.size === 0) continue;
+      const smaller = a.terms.size < b.terms.size ? a.terms : b.terms;
+      const larger = smaller === a.terms ? b.terms : a.terms;
+      let shared = 0;
+      for (const term of smaller) {
+        if (larger.has(term)) shared += 1;
+      }
+      if (shared === 0) continue;
+      const score = shared / Math.sqrt(a.terms.size * b.terms.size);
+      graph.get(a.slug).push({ slug: b.slug, title: b.title, score });
+      graph.get(b.slug).push({ slug: a.slug, title: a.title, score });
+    }
+  }
+
+  for (const related of graph.values()) {
+    related.sort((left, right) => right.score - left.score);
+  }
+
+  return graph;
+}
+
+function pickTangentialRelatedPage(relatedPages, excludedSlugs) {
+  const available = relatedPages.filter((page) => !excludedSlugs.has(page.slug));
+  if (available.length === 0) return null;
+  if (available.length === 1) return available[0];
+  const start = Math.floor(available.length * 0.25);
+  const end = Math.max(start + 1, Math.floor(available.length * 0.75));
+  const tangentialPool = available.slice(start, end);
+  const pool = tangentialPool.length > 0 ? tangentialPool : available;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function sanitizeSlugList(value) {
+  if (typeof value !== 'string') return [];
+  return value
+    .split(',')
+    .map((slug) => slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
+    .filter(Boolean)
+    .slice(0, 1000);
+}
+
 function requireAuth(allowedRoles = []) {
   return (req, res, next) => {
     const session = getSessionUser(req);
@@ -735,16 +823,67 @@ app.post('/api/pro/redeem', readLimiter, requireAuth(), (req, res) => {
 // List all saved wiki pages
 app.get('/api/pages', readLimiter, requireAuth(), (req, res) => {
   try {
-    const files = fs.readdirSync(WIKI_DIR).filter((f) => f.endsWith('.md'));
-    const pages = files.map((file) => {
-      const slug = path.basename(file, '.md');
-      const content = fs.readFileSync(path.join(WIKI_DIR, file), 'utf8');
-      const title = extractTitle(content, slug);
+    const pages = readWikiPageRecords().map(({ slug, title }) => {
       return { slug, title };
     });
     res.json(pages);
   } catch (err) {
     res.status(500).json({ error: 'Failed to list pages.' });
+  }
+});
+
+app.get('/api/wiki/:slug/article', readLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).json({ error: 'Invalid page slug.' });
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).json({ error: 'Page not found.' });
+  }
+  const markdown = fs.readFileSync(safe.resolved, 'utf8');
+  const title = extractTitle(markdown, safe.sanitized);
+  const htmlContent = marked(markdown);
+  return res.json({ slug: safe.sanitized, title, htmlContent });
+});
+
+app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).json({ error: 'Invalid page slug.' });
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).json({ error: 'Page not found.' });
+  }
+
+  try {
+    const pageRecords = readWikiPageRecords();
+    const pageBySlug = new Map(pageRecords.map((page) => [page.slug, page]));
+    if (!pageBySlug.has(safe.sanitized)) {
+      return res.status(404).json({ error: 'Page not found.' });
+    }
+
+    const excludedSlugs = new Set(sanitizeSlugList(req.query.exclude));
+    excludedSlugs.add(safe.sanitized);
+
+    const relationshipGraph = buildRelationshipGraph(pageRecords);
+    const relatedPages = relationshipGraph.get(safe.sanitized) || [];
+    let nextPage = pickTangentialRelatedPage(relatedPages, excludedSlugs);
+
+    if (!nextPage) {
+      const fallbackPool = pageRecords.filter((page) => !excludedSlugs.has(page.slug));
+      if (fallbackPool.length > 0) {
+        const fallback = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+        nextPage = { slug: fallback.slug, title: fallback.title, score: 0 };
+      }
+    }
+
+    return res.json({
+      next: nextPage
+        ? { slug: nextPage.slug, title: nextPage.title, score: Number(nextPage.score.toFixed(4)) }
+        : null,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to pick a related page.' });
   }
 });
 
@@ -824,6 +963,8 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   const markdown = fs.readFileSync(safe.resolved, 'utf8');
   const title = extractTitle(markdown, safe.sanitized);
   const htmlContent = marked(markdown);
+  const initialSlugJson = JSON.stringify(safe.sanitized);
+  const initialTitleJson = JSON.stringify(title);
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -838,14 +979,104 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
     <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
     <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
   </header>
-  <main class="wiki-article">
-    ${htmlContent}
+  <main class="wiki-stream" id="wiki-stream">
+    <article class="wiki-article wiki-article-card" data-slug="${escapeHtml(safe.sanitized)}">
+      ${htmlContent}
+    </article>
+    <div class="wiki-scroll-status" id="wiki-scroll-status" aria-live="polite">Scroll down to discover a tangentially related article from your existing pages.</div>
+    <div class="wiki-scroll-sentinel" id="wiki-scroll-sentinel" aria-hidden="true"></div>
   </main>
   <footer class="site-footer">
     <p>Generated by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
     <p><a href="/">← Back to search</a></p>
     <p><a href="https://discord.gg/HmKesPxYqY" target="_blank" rel="noopener noreferrer">Join our Discord</a></p>
   </footer>
+  <script>
+    (() => {
+      const stream = document.getElementById('wiki-stream');
+      const status = document.getElementById('wiki-scroll-status');
+      const sentinel = document.getElementById('wiki-scroll-sentinel');
+      const loadedSlugs = new Set([${initialSlugJson}]);
+      const streamTitle = ${initialTitleJson};
+      let loading = false;
+      let done = false;
+
+      function setStatus(text) {
+        status.textContent = text;
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(String(text || '')));
+        return div.innerHTML;
+      }
+
+      async function loadNextTangentialPage() {
+        if (loading || done) return;
+        loading = true;
+        setStatus('Finding a tangentially related article…');
+        try {
+          const exclude = Array.from(loadedSlugs).join(',');
+          const currentSlug = Array.from(loadedSlugs).at(-1);
+          const nextRes = await fetch('/api/wiki/' + encodeURIComponent(currentSlug) + '/next?exclude=' + encodeURIComponent(exclude));
+          if (!nextRes.ok) {
+            setStatus('Could not load more articles right now.');
+            loading = false;
+            return;
+          }
+          const nextData = await nextRes.json();
+          const next = nextData && nextData.next;
+          if (!next || !next.slug || loadedSlugs.has(next.slug)) {
+            done = true;
+            setStatus('No more existing related articles to show.');
+            loading = false;
+            return;
+          }
+
+          const articleRes = await fetch('/api/wiki/' + encodeURIComponent(next.slug) + '/article');
+          if (!articleRes.ok) {
+            setStatus('Could not load more articles right now.');
+            loading = false;
+            return;
+          }
+          const articleData = await articleRes.json();
+          if (!articleData || !articleData.slug || !articleData.htmlContent) {
+            setStatus('Could not load more articles right now.');
+            loading = false;
+            return;
+          }
+
+          loadedSlugs.add(articleData.slug);
+          const card = document.createElement('article');
+          card.className = 'wiki-article wiki-article-card';
+          card.setAttribute('data-slug', articleData.slug);
+          const label = loadedSlugs.size === 2
+            ? 'Tangentially related to ' + streamTitle
+            : 'Tangentially related to ' + (next.title || articleData.title || articleData.slug);
+          card.innerHTML =
+            '<p class="wiki-stream-label">' + escapeHtml(label) + '</p>' +
+            '<p class="wiki-stream-link-wrap"><a class="wiki-stream-link" href="/wiki/' + encodeURIComponent(articleData.slug) + '">Open ' + escapeHtml(articleData.title || articleData.slug) + ' as a standalone page</a></p>' +
+            articleData.htmlContent;
+          stream.insertBefore(card, status);
+          setStatus('Scroll for another related article.');
+        } catch (err) {
+          setStatus('Could not load more articles right now.');
+        } finally {
+          loading = false;
+        }
+      }
+
+      const observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            loadNextTangentialPage();
+          }
+        }
+      }, { rootMargin: '600px 0px 600px 0px' });
+
+      observer.observe(sentinel);
+    })();
+  </script>
 </body>
 </html>`);
 });
