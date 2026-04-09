@@ -48,6 +48,10 @@ body {
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
   padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .site-logo {
@@ -59,6 +63,17 @@ body {
 }
 
 .site-logo:hover {
+  text-decoration: underline;
+}
+
+.header-discord-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.header-discord-link:hover {
   text-decoration: underline;
 }
 
