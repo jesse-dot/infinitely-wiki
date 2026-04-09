@@ -18,6 +18,7 @@ const parsePositiveInt = (value, fallback) => {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
+const TRUST_PROXY = process.env.TRUST_PROXY;
 const WIKI_DIR = path.join(__dirname, 'wiki-pages');
 const DATA_DIR = path.join(__dirname, 'data');
 const AUTH_STATE_FILE = path.join(DATA_DIR, 'auth-state.json');
@@ -39,6 +40,18 @@ const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 128;
+
+function parseTrustProxy(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'loopback';
+  const normalized = raw.toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  if (/^\d+$/.test(raw)) return Number.parseInt(raw, 10);
+  return raw;
+}
+
+app.set('trust proxy', parseTrustProxy(TRUST_PROXY));
 
 // Ensure wiki-pages directory exists
 if (!fs.existsSync(WIKI_DIR)) {
@@ -399,7 +412,7 @@ const readLimiter = rateLimit({
 
 function getRateLimitKey(req) {
   const session = getSessionUser(req);
-  return session?.userId || ipKeyGenerator(req);
+  return session?.userId || ipKeyGenerator(req.ip || req.socket?.remoteAddress || '');
 }
 
 const adminGenerateLimiter = rateLimit({
