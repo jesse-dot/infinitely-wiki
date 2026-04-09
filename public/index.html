@@ -90,6 +90,8 @@
           <span class="plan-badge" id="session-plan"></span>
         </p>
         <div class="session-actions">
+          <a href="/discover" class="admin-link hidden" id="discover-link">Infinite Discovery</a>
+          <a href="/profile" class="admin-link hidden" id="profile-link">Profile</a>
           <a href="/admin" class="admin-link hidden" id="admin-link">Admin Panel</a>
           <button type="button" class="logout-btn" id="logout-btn">Log out</button>
         </div>
@@ -171,6 +173,8 @@
     const sessionUsername = document.getElementById('session-username');
     const sessionRole = document.getElementById('session-role');
     const sessionPlan = document.getElementById('session-plan');
+    const discoverLink = document.getElementById('discover-link');
+    const profileLink = document.getElementById('profile-link');
     const adminLink = document.getElementById('admin-link');
     const logoutBtn = document.getElementById('logout-btn');
     const proPanel = document.getElementById('pro-panel');
@@ -257,6 +261,8 @@
         signupForm.reset();
         input.disabled = true;
         btn.disabled = true;
+        discoverLink.classList.add('hidden');
+        profileLink.classList.add('hidden');
         adminLink.classList.add('hidden');
         sessionPlan.textContent = '';
         clearProMessage();
@@ -272,6 +278,8 @@
         ? 'Unlimited generations'
         : `${generation.monthlyRemaining} generations left this month`;
       sessionPlan.textContent = `${planName.toUpperCase()} · ${remainingText}`;
+      discoverLink.classList.remove('hidden');
+      profileLink.classList.remove('hidden');
       adminLink.classList.toggle('hidden', currentUser.role !== 'admin');
       input.disabled = false;
       btn.disabled = false;
