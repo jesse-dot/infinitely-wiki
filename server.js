@@ -22,6 +22,7 @@ const TRUST_PROXY = process.env.TRUST_PROXY;
 const WIKI_DIR = path.join(__dirname, 'wiki-pages');
 const DATA_DIR = path.join(__dirname, 'data');
 const AUTH_STATE_FILE = path.join(DATA_DIR, 'auth-state.json');
+const ARTICLE_STATE_FILE = path.join(DATA_DIR, 'article-state.json');
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const PRIMARY_MODEL = process.env.GEMMA_PRIMARY_MODEL || 'gemma-4-27b-it';
 const FALLBACK_MODEL = process.env.GEMMA_FALLBACK_MODEL || 'gemma-3-27b-it';
@@ -49,6 +50,15 @@ let wikiRelationshipCache = {
   records: [],
   graph: new Map(),
 };
+const BADGE_DEFINITIONS = [
+  { id: 'gen-1', category: 'generation', threshold: 1, name: 'First Article', description: 'Generate your first article.' },
+  { id: 'gen-10', category: 'generation', threshold: 10, name: 'Researcher', description: 'Generate 10 articles.' },
+  { id: 'gen-50', category: 'generation', threshold: 50, name: 'Archivist', description: 'Generate 50 articles.' },
+  { id: 'scroll-5', category: 'scroll', threshold: 5, name: 'Wanderer', description: 'Discover 5 articles via infinite scroll.' },
+  { id: 'scroll-25', category: 'scroll', threshold: 25, name: 'Explorer', description: 'Discover 25 articles via infinite scroll.' },
+  { id: 'scroll-100', category: 'scroll', threshold: 100, name: 'Infinite Voyager', description: 'Discover 100 articles via infinite scroll.' },
+];
+const MAX_COMMENT_LENGTH = 1000;
 
 function parseTrustProxy(value) {
   const raw = String(value || '').trim();
@@ -105,8 +115,39 @@ function loadAuthState() {
 let authState = loadAuthState();
 pruneExpiredSessions();
 
+function loadArticleState() {
+  const emptyState = { articles: Object.create(null) };
+
+  function toSafeMap(input) {
+    const safe = Object.create(null);
+    if (!input || typeof input !== 'object') return safe;
+    for (const [rawKey, value] of Object.entries(input)) {
+      const key = String(rawKey);
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      safe[key] = value;
+    }
+    return safe;
+  }
+
+  if (!fs.existsSync(ARTICLE_STATE_FILE)) {
+    return emptyState;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ARTICLE_STATE_FILE, 'utf8'));
+    return { articles: toSafeMap(parsed.articles) };
+  } catch {
+    return emptyState;
+  }
+}
+
+let articleState = loadArticleState();
+
 function saveAuthState() {
   fs.writeFileSync(AUTH_STATE_FILE, JSON.stringify(authState, null, 2), 'utf8');
+}
+
+function saveArticleState() {
+  fs.writeFileSync(ARTICLE_STATE_FILE, JSON.stringify(articleState, null, 2), 'utf8');
 }
 
 function getCurrentMonthKey() {
@@ -225,6 +266,10 @@ function createUserRecord(userId, password) {
     proExpiresAt: null,
     proPermanent: false,
     generationUsage: { month: getCurrentMonthKey(), count: 0 },
+    stats: {
+      generatedArticles: 0,
+      infiniteScrollDiscoveries: 0,
+    },
     createdAt: new Date().toISOString(),
   };
   authState.users[normalizedUserId] = record;
@@ -393,6 +438,133 @@ function consumeGenerationQuota(role, record) {
   record.generationUsage = usage;
   saveAuthState();
   return { allowed: true, status: getGenerationStatus(role, record) };
+}
+
+function ensureUserProgress(record) {
+  const existing = record && typeof record.stats === 'object' ? record.stats : {};
+  const generatedArticles = Number.isFinite(Number(existing.generatedArticles))
+    ? Math.max(0, Number(existing.generatedArticles))
+    : 0;
+  const infiniteScrollDiscoveries = Number.isFinite(Number(existing.infiniteScrollDiscoveries))
+    ? Math.max(0, Number(existing.infiniteScrollDiscoveries))
+    : 0;
+  const normalized = { generatedArticles, infiniteScrollDiscoveries };
+  if (!record.stats
+    || record.stats.generatedArticles !== generatedArticles
+    || record.stats.infiniteScrollDiscoveries !== infiniteScrollDiscoveries) {
+    record.stats = normalized;
+    saveAuthState();
+  }
+  return record.stats;
+}
+
+function incrementUserProgress(record, field, amount = 1) {
+  if (!record || (field !== 'generatedArticles' && field !== 'infiniteScrollDiscoveries')) return;
+  const stats = ensureUserProgress(record);
+  const delta = Number.isFinite(Number(amount)) ? Number(amount) : 0;
+  if (delta <= 0) return;
+  stats[field] = Math.max(0, Number(stats[field] || 0) + delta);
+  record.stats = stats;
+  saveAuthState();
+}
+
+function getUserBadges(record) {
+  const stats = ensureUserProgress(record);
+  return BADGE_DEFINITIONS.map((badge) => {
+    const progress = badge.category === 'generation'
+      ? stats.generatedArticles
+      : stats.infiniteScrollDiscoveries;
+    return {
+      ...badge,
+      earned: progress >= badge.threshold,
+      progress,
+    };
+  });
+}
+
+function ensureArticleRecord(slug) {
+  const safeSlug = String(slug || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+  if (!safeSlug) return null;
+  const existing = articleState.articles[safeSlug];
+  if (existing && typeof existing === 'object') {
+    if (!Array.isArray(existing.comments)) {
+      existing.comments = [];
+      saveArticleState();
+    }
+    return existing;
+  }
+  const created = { generatedBy: null, generatedAt: null, comments: [] };
+  articleState.articles[safeSlug] = created;
+  saveArticleState();
+  return created;
+}
+
+function recordArticleGenerator(slug, userId) {
+  const record = ensureArticleRecord(slug);
+  if (!record) return;
+  if (!record.generatedBy) {
+    record.generatedBy = userId;
+    record.generatedAt = new Date().toISOString();
+    saveArticleState();
+  }
+}
+
+function getArticleGeneratorInfo(slug) {
+  const record = ensureArticleRecord(slug);
+  if (!record) return null;
+  const generatorId = normalizeUserId(record.generatedBy || '');
+  if (!generatorId) return null;
+  const generatorRecord = getUserRecord(generatorId);
+  if (!generatorRecord) return null;
+  return {
+    userId: generatorId,
+    username: generatorRecord.username || generatorId,
+    generatedAt: record.generatedAt || null,
+  };
+}
+
+function listArticleComments(slug) {
+  const record = ensureArticleRecord(slug);
+  if (!record) return [];
+  const comments = Array.isArray(record.comments) ? record.comments : [];
+  return comments
+    .filter((comment) => comment && typeof comment === 'object')
+    .map((comment) => {
+      const authorId = normalizeUserId(comment.authorId || '');
+      const authorRecord = authorId ? getUserRecord(authorId) : null;
+      return {
+        id: String(comment.id || ''),
+        body: String(comment.body || ''),
+        createdAt: comment.createdAt || null,
+        author: authorId
+          ? { userId: authorId, username: authorRecord?.username || authorId }
+          : null,
+      };
+    })
+    .filter((comment) => comment.id && comment.body);
+}
+
+function addArticleComment(slug, authorId, body) {
+  const text = String(body || '').trim();
+  if (!text) return { error: 'Comment is required.' };
+  if (text.length > MAX_COMMENT_LENGTH) {
+    return { error: `Comment is too long (max ${MAX_COMMENT_LENGTH} characters).` };
+  }
+  const record = ensureArticleRecord(slug);
+  if (!record) return { error: 'Invalid page slug.' };
+  const comment = {
+    id: crypto.randomUUID(),
+    authorId,
+    body: text,
+    createdAt: new Date().toISOString(),
+  };
+  if (!Array.isArray(record.comments)) record.comments = [];
+  record.comments.push(comment);
+  if (record.comments.length > 1000) {
+    record.comments = record.comments.slice(-1000);
+  }
+  saveArticleState();
+  return { comment };
 }
 
 function makeProKey() {
@@ -702,12 +874,15 @@ function generationLimiterByRole(req, res, next) {
 }
 
 function buildAuthPayload(userId, userRecord) {
+  const stats = ensureUserProgress(userRecord);
   return {
     userId,
     username: userRecord.username || userId,
     role: userRecord.role,
     plan: getPlanForUser(userRecord),
     generation: getGenerationStatus(userRecord.role, userRecord),
+    stats,
+    badges: getUserBadges(userRecord).filter((badge) => badge.earned),
   };
 }
 
@@ -819,6 +994,73 @@ app.get('/api/auth/me', readLimiter, requireAuth(), (req, res) => {
   return res.json(buildAuthPayload(req.user.userId, req.userRecord));
 });
 
+app.get('/profile', readLimiter, requireAuth(), (req, res) => {
+  return res.redirect(`/u/${encodeURIComponent(req.user.userId)}`);
+});
+
+app.get('/u/:userId', readLimiter, requireAuth(), (req, res) => {
+  const profileUserId = normalizeUserId(req.params.userId);
+  if (!profileUserId) {
+    return res.status(400).send('Invalid profile user.');
+  }
+  const profileRecord = getUserRecord(profileUserId);
+  if (!profileRecord) {
+    return res.status(404).send('Profile not found.');
+  }
+
+  const stats = ensureUserProgress(profileRecord);
+  const badges = getUserBadges(profileRecord);
+  ensureArticleActionsState(profileRecord);
+  const displayName = profileRecord.username || profileUserId;
+  const isCurrentUser = req.user.userId === profileUserId;
+  const role = profileRecord.role || 'user';
+  const createdAt = profileRecord.createdAt ? new Date(profileRecord.createdAt).toISOString().slice(0, 10) : 'Unknown';
+  const badgeItemsHtml = badges.map((badge) => `
+      <li class="profile-badge ${badge.earned ? 'earned' : 'locked'}">
+        <strong>${escapeHtml(badge.name)}</strong>
+        <span>${escapeHtml(badge.description)}</span>
+        <small>${badge.progress}/${badge.threshold}</small>
+      </li>
+    `).join('');
+
+  return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(displayName)} — Profile — Infinitely Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+    <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
+  </header>
+  <main class="profile-page">
+    <section class="profile-card">
+      <h1>${escapeHtml(displayName)} ${isCurrentUser ? '(You)' : ''}</h1>
+      <p class="profile-meta">Role: ${escapeHtml(role)} · Joined: ${escapeHtml(createdAt)}</p>
+      <div class="profile-stats">
+        <div class="profile-stat"><strong>${stats.generatedArticles}</strong><span>Generated articles</span></div>
+        <div class="profile-stat"><strong>${stats.infiniteScrollDiscoveries}</strong><span>Infinite-scroll discoveries</span></div>
+        <div class="profile-stat"><strong>${profileRecord.likedArticles.length}</strong><span>Liked articles</span></div>
+        <div class="profile-stat"><strong>${profileRecord.savedArticles.length}</strong><span>Saved articles</span></div>
+      </div>
+    </section>
+    <section class="profile-card">
+      <h2>Badges</h2>
+      <ul class="profile-badge-list">
+        ${badgeItemsHtml || '<li class="profile-badge locked"><strong>No badges yet</strong><span>Generate or discover articles to earn badges.</span></li>'}
+      </ul>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <p><a href="/">← Back to home</a></p>
+  </footer>
+</body>
+</html>`);
+});
+
 app.get('/admin', adminPanelLimiter, requireAuth(['admin']), (req, res) => {
   return res.sendFile(path.join(__dirname, 'admin-panel.html'));
 });
@@ -924,7 +1166,34 @@ app.get('/api/wiki/:slug/article', readLimiter, requireAuth(), (req, res) => {
   const markdown = fs.readFileSync(safe.resolved, 'utf8');
   const title = extractTitle(markdown, safe.sanitized);
   const htmlContent = marked(markdown);
-  return res.json({ slug: safe.sanitized, title, htmlContent });
+  const generatedBy = getArticleGeneratorInfo(safe.sanitized);
+  return res.json({ slug: safe.sanitized, title, htmlContent, generatedBy });
+});
+
+app.get('/api/wiki/:slug/comments', readLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).json({ error: 'Invalid page slug.' });
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).json({ error: 'Page not found.' });
+  }
+  return res.json({ comments: listArticleComments(safe.sanitized) });
+});
+
+app.post('/api/wiki/:slug/comments', writeLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).json({ error: 'Invalid page slug.' });
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).json({ error: 'Page not found.' });
+  }
+  const result = addArticleComment(safe.sanitized, req.user.userId, req.body && req.body.body);
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.status(201).json({ comment: listArticleComments(safe.sanitized).at(-1) || null });
 });
 
 app.get('/api/wiki/actions', readLimiter, requireAuth(), (req, res) => {
@@ -1010,6 +1279,10 @@ app.get('/api/wiki/:slug/next', readLimiter, requireAuth(), (req, res) => {
       }
     }
 
+    if (nextPage) {
+      incrementUserProgress(req.userRecord, 'infiniteScrollDiscoveries', 1);
+    }
+
     return res.json({
       next: nextPage
         ? { slug: nextPage.slug, title: nextPage.title, score: Number(nextPage.score.toFixed(4)) }
@@ -1075,6 +1348,8 @@ Do NOT include any preamble, disclaimers, or meta-commentary — output ONLY the
     const fullContent = banner + text;
 
     fs.writeFileSync(safe.resolved, fullContent, 'utf8');
+    recordArticleGenerator(safe.sanitized, req.user.userId);
+    incrementUserProgress(req.userRecord, 'generatedArticles', 1);
     return res.json({ slug: safe.sanitized, cached: false, modelUsed, generation: quota.status });
   } catch (err) {
     console.error('Gemini API error:', err);
@@ -1082,8 +1357,46 @@ Do NOT include any preamble, disclaimers, or meta-commentary — output ONLY the
   }
 });
 
-// Serve a wiki page rendered as HTML
-app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
+app.get('/discover', readLimiter, requireAuth(), (req, res) => {
+  try {
+    const files = fs.readdirSync(WIKI_DIR).filter((file) => file.endsWith('.md'));
+    if (files.length === 0) {
+      return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Discover — Infinitely Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+    <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
+  </header>
+  <main class="profile-page">
+    <section class="profile-card">
+      <h1>No articles to explore yet</h1>
+      <p>Generate your first article from the home page, then return here to use infinite discovery.</p>
+      <p><a class="wiki-stream-link" href="/">Go to home</a></p>
+    </section>
+  </main>
+</body>
+</html>`);
+    }
+
+    const latestFile = files
+      .map((file) => ({ file, mtime: fs.statSync(path.join(WIKI_DIR, file)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0].file;
+    const slug = path.basename(latestFile, '.md');
+    return res.redirect(`/discover/${encodeURIComponent(slug)}`);
+  } catch (err) {
+    return res.status(500).send('Could not load discovery page.');
+  }
+});
+
+// Serve an infinite discovery page rendered as HTML
+app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
   const safe = safeWikiPath(req.params.slug);
   if (!safe) {
     return res.status(400).send('Invalid page slug.');
@@ -1099,6 +1412,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   const initialSlugJson = JSON.stringify(safe.sanitized);
   const initialTitleJson = JSON.stringify(title);
   const initialHtmlJson = JSON.stringify(htmlContent);
+  const initialGeneratedByJson = JSON.stringify(getArticleGeneratorInfo(safe.sanitized));
   const rootMarginJson = JSON.stringify(INFINITE_SCROLL_ROOT_MARGIN);
 
   res.send(`<!DOCTYPE html>
@@ -1128,7 +1442,6 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
   </footer>
   <script>
     (() => {
-      const stream = document.getElementById('wiki-stream');
       const cardsContainer = document.getElementById('wiki-cards-container');
       const topSpacer = document.getElementById('wiki-virtual-top-spacer');
       const bottomSpacer = document.getElementById('wiki-virtual-bottom-spacer');
@@ -1138,15 +1451,20 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
       const likedSlugs = new Set();
       const savedSlugs = new Set();
       const pendingActions = new Set();
+      const commentsBySlug = new Map();
+      const commentsLoading = new Set();
+      const commentsLoaded = new Set();
+      const commentSavePending = new Set();
       const streamTitle = ${initialTitleJson};
       const initialHtml = ${initialHtmlJson};
+      const initialGeneratedBy = ${initialGeneratedByJson};
       const ROOT_MARGIN = ${rootMarginJson};
       const MAX_WINDOWED_CARDS = 6;
       const ESTIMATED_CARD_HEIGHT = 900;
       let currentRelationTitle = streamTitle;
       let loading = false;
       let done = false;
-      const cards = [{ slug: ${initialSlugJson}, title: streamTitle, htmlContent: initialHtml, label: '', showLink: false }];
+      const cards = [{ slug: ${initialSlugJson}, title: streamTitle, htmlContent: initialHtml, label: '', showLink: false, generatedBy: initialGeneratedBy }];
       const cardHeights = [ESTIMATED_CARD_HEIGHT];
 
       function setStatus(text) {
@@ -1184,6 +1502,91 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
           '<button type="button" class="wiki-action-btn' + (liked ? ' is-active' : '') + '" data-action="like" data-slug="' + escapeHtml(slug) + '" aria-pressed="' + String(liked) + '">' + (liked ? '♥ Liked' : '♡ Like') + '</button>' +
           '<button type="button" class="wiki-action-btn' + (saved ? ' is-active' : '') + '" data-action="save" data-slug="' + escapeHtml(slug) + '" aria-pressed="' + String(saved) + '">' + (saved ? '💾 Saved' : '💾 Save') + '</button>' +
           '</div>';
+      }
+
+      function renderGeneratorLine(generator) {
+        if (!generator || !generator.userId) {
+          return '<p class="wiki-generator-line">Generated by <span>Unknown user</span></p>';
+        }
+        return '<p class="wiki-generator-line">Generated by <a class="wiki-stream-link" href="/u/' +
+          encodeURIComponent(generator.userId) + '">' + escapeHtml(generator.username || generator.userId) + '</a></p>';
+      }
+
+      function formatCommentBody(text) {
+        return escapeHtml(String(text || '')).replace(/\\n/g, '<br>');
+      }
+
+      function renderCommentsMarkup(slug) {
+        const comments = commentsBySlug.get(slug) || [];
+        if (comments.length === 0) {
+          return '<p class="wiki-comments-empty">No comments yet. Start the discussion.</p>';
+        }
+        return comments.map((comment) => {
+          const author = comment.author && comment.author.userId
+            ? '<a class="wiki-stream-link" href="/u/' + encodeURIComponent(comment.author.userId) + '">' + escapeHtml(comment.author.username || comment.author.userId) + '</a>'
+            : 'Unknown user';
+          return '<article class="wiki-comment-item">' +
+            '<p class="wiki-comment-meta">' + author + ' · ' + escapeHtml(comment.createdAt || '') + '</p>' +
+            '<p class="wiki-comment-body">' + formatCommentBody(comment.body) + '</p>' +
+            '</article>';
+        }).join('');
+      }
+
+      function syncCommentsForSlug(slug) {
+        const lists = cardsContainer.querySelectorAll('.wiki-comments-list[data-slug]');
+        for (const list of lists) {
+          if (list.getAttribute('data-slug') !== slug) continue;
+          list.innerHTML = renderCommentsMarkup(slug);
+        }
+      }
+
+      async function loadCommentsForSlug(slug) {
+        if (commentsLoading.has(slug) || commentsLoaded.has(slug)) return;
+        commentsLoading.add(slug);
+        try {
+          const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/comments');
+          if (!res.ok) return;
+          const data = await res.json();
+          commentsBySlug.set(slug, Array.isArray(data.comments) ? data.comments : []);
+          commentsLoaded.add(slug);
+          syncCommentsForSlug(slug);
+        } catch (err) {
+          // Ignore comment load errors and keep browsing.
+        } finally {
+          commentsLoading.delete(slug);
+        }
+      }
+
+      async function submitComment(slug, body, textarea, button) {
+        const pendingKey = 'comment:' + slug;
+        if (commentSavePending.has(pendingKey)) return;
+        commentSavePending.add(pendingKey);
+        textarea.disabled = true;
+        button.disabled = true;
+        try {
+          const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/comments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.comment) {
+            setStatus((data && data.error) || 'Could not post comment right now.');
+            return;
+          }
+          const comments = commentsBySlug.get(slug) || [];
+          comments.push(data.comment);
+          commentsBySlug.set(slug, comments);
+          commentsLoaded.add(slug);
+          textarea.value = '';
+          syncCommentsForSlug(slug);
+        } catch (err) {
+          setStatus('Could not post comment right now.');
+        } finally {
+          commentSavePending.delete(pendingKey);
+          textarea.disabled = false;
+          button.disabled = false;
+        }
       }
 
       function syncActionButtonsForSlug(slug) {
@@ -1249,7 +1652,18 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
               '">Open ' + escapeHtml(card.title || card.slug) + ' as a standalone page</a></p>'
           );
         }
+        parts.push(renderGeneratorLine(card.generatedBy));
         parts.push(renderActionButtons(card.slug));
+        parts.push(
+          '<section class="wiki-talk-section">' +
+            '<h2 class="wiki-talk-heading">Talk</h2>' +
+            '<div class="wiki-comments-list" data-slug="' + escapeHtml(card.slug) + '">' + renderCommentsMarkup(card.slug) + '</div>' +
+            '<form class="wiki-comment-form" data-slug="' + escapeHtml(card.slug) + '">' +
+              '<textarea class="wiki-comment-input" name="body" maxlength="${MAX_COMMENT_LENGTH}" placeholder="Add a comment…" required></textarea>' +
+              '<button type="submit" class="search-btn wiki-comment-submit">Post comment</button>' +
+            '</form>' +
+          '</section>'
+        );
         parts.push(card.htmlContent || '');
         return '<article class="wiki-article wiki-article-card" data-index="' + index + '" data-slug="' + escapeHtml(card.slug) + '">' + parts.join('') + '</article>';
       }
@@ -1263,6 +1677,9 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
           .map((card, offset) => renderCardMarkup(card, startIndex + offset))
           .join('');
         syncAllActionButtons();
+        for (const card of visibleCards) {
+          loadCommentsForSlug(card.slug);
+        }
         requestAnimationFrame(() => {
           const rendered = cardsContainer.querySelectorAll('.wiki-article-card[data-index]');
           for (const cardElement of rendered) {
@@ -1348,6 +1765,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
             htmlContent: articleData.htmlContent,
             label,
             showLink: true,
+            generatedBy: articleData.generatedBy || null,
           });
           cardHeights.push(ESTIMATED_CARD_HEIGHT);
           currentRelationTitle = articleData.title || articleData.slug;
@@ -1366,7 +1784,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
             loadNextTangentialPage();
           }
         }
-      }, { rootMargin: '600px 0px 600px 0px' });
+      }, { rootMargin: ROOT_MARGIN });
 
       cardsContainer.addEventListener('click', (event) => {
         const button = event.target.closest('.wiki-action-btn');
@@ -1378,9 +1796,195 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
         toggleAction(slug, action, nextValue);
       });
 
+      cardsContainer.addEventListener('submit', (event) => {
+        const form = event.target.closest('.wiki-comment-form');
+        if (!form) return;
+        event.preventDefault();
+        const slug = form.getAttribute('data-slug');
+        const textarea = form.querySelector('.wiki-comment-input');
+        const button = form.querySelector('.wiki-comment-submit');
+        if (!slug || !textarea || !button) return;
+        const body = textarea.value.trim();
+        if (!body) return;
+        submitComment(slug, body, textarea, button);
+      });
+
       renderVirtualWindow();
       loadInitialActionState();
       observer.observe(sentinel);
+    })();
+  </script>
+</body>
+</html>`);
+});
+
+// Serve a single wiki article page (without infinite discovery)
+app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
+  const safe = safeWikiPath(req.params.slug);
+  if (!safe) {
+    return res.status(400).send('Invalid page slug.');
+  }
+  if (!fs.existsSync(safe.resolved)) {
+    return res.status(404).send('Page not found.');
+  }
+
+  const markdown = fs.readFileSync(safe.resolved, 'utf8');
+  const title = extractTitle(markdown, safe.sanitized);
+  const htmlContent = marked(markdown);
+  const generator = getArticleGeneratorInfo(safe.sanitized);
+  const slugJson = JSON.stringify(safe.sanitized);
+  const generatorJson = JSON.stringify(generator);
+
+  return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)} — Infinitely Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="site-logo">🌐 Infinitely Wiki</a>
+    <a href="https://discord.gg/HmKesPxYqY" class="header-discord-link" target="_blank" rel="noopener noreferrer">Discord</a>
+  </header>
+  <main class="wiki-article">
+    <p class="wiki-generator-line" id="wiki-generator-line"></p>
+    <div class="wiki-article-actions">
+      <button type="button" class="wiki-action-btn" id="wiki-like-btn" aria-pressed="false">♡ Like</button>
+      <button type="button" class="wiki-action-btn" id="wiki-save-btn" aria-pressed="false">💾 Save</button>
+      <a class="wiki-stream-link" href="/discover/${encodeURIComponent(safe.sanitized)}">Open in Infinite Discovery</a>
+    </div>
+    <section class="wiki-talk-section">
+      <h2 class="wiki-talk-heading">Talk</h2>
+      <div class="wiki-comments-list" id="wiki-comments-list"></div>
+      <form class="wiki-comment-form" id="wiki-comment-form">
+        <textarea class="wiki-comment-input" id="wiki-comment-input" maxlength="${MAX_COMMENT_LENGTH}" placeholder="Add a comment…" required></textarea>
+        <button type="submit" class="search-btn wiki-comment-submit" id="wiki-comment-submit">Post comment</button>
+      </form>
+    </section>
+    ${htmlContent}
+  </main>
+  <footer class="site-footer">
+    <p>Generated by <strong>Gemma AI</strong> via Google Gemini API. Content may be inaccurate.</p>
+    <p><a href="/">← Back to search</a></p>
+    <p><a href="/discover/${encodeURIComponent(safe.sanitized)}">Start infinite discovery from this article</a></p>
+  </footer>
+  <script>
+    (() => {
+      const slug = ${slugJson};
+      const generator = ${generatorJson};
+      const generatorLine = document.getElementById('wiki-generator-line');
+      const likeBtn = document.getElementById('wiki-like-btn');
+      const saveBtn = document.getElementById('wiki-save-btn');
+      const commentsList = document.getElementById('wiki-comments-list');
+      const commentForm = document.getElementById('wiki-comment-form');
+      const commentInput = document.getElementById('wiki-comment-input');
+      const commentSubmit = document.getElementById('wiki-comment-submit');
+
+      let liked = false;
+      let saved = false;
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(String(text || '')));
+        return div.innerHTML;
+      }
+
+      function syncButtons() {
+        likeBtn.classList.toggle('is-active', liked);
+        saveBtn.classList.toggle('is-active', saved);
+        likeBtn.setAttribute('aria-pressed', liked ? 'true' : 'false');
+        saveBtn.setAttribute('aria-pressed', saved ? 'true' : 'false');
+        likeBtn.textContent = liked ? '♥ Liked' : '♡ Like';
+        saveBtn.textContent = saved ? '💾 Saved' : '💾 Save';
+      }
+
+      function renderGenerator() {
+        if (!generator || !generator.userId) {
+          generatorLine.textContent = 'Generated by Unknown user';
+          return;
+        }
+        generatorLine.innerHTML = 'Generated by <a class="wiki-stream-link" href="/u/' +
+          encodeURIComponent(generator.userId) + '">' + escapeHtml(generator.username || generator.userId) + '</a>';
+      }
+
+      function formatCommentBody(text) {
+        return escapeHtml(text).replace(/\\n/g, '<br>');
+      }
+
+      function renderComments(comments) {
+        if (!Array.isArray(comments) || comments.length === 0) {
+          commentsList.innerHTML = '<p class="wiki-comments-empty">No comments yet. Start the discussion.</p>';
+          return;
+        }
+        commentsList.innerHTML = comments.map((comment) => {
+          const author = comment.author && comment.author.userId
+            ? '<a class="wiki-stream-link" href="/u/' + encodeURIComponent(comment.author.userId) + '">' + escapeHtml(comment.author.username || comment.author.userId) + '</a>'
+            : 'Unknown user';
+          return '<article class="wiki-comment-item">' +
+            '<p class="wiki-comment-meta">' + author + ' · ' + escapeHtml(comment.createdAt || '') + '</p>' +
+            '<p class="wiki-comment-body">' + formatCommentBody(comment.body || '') + '</p>' +
+            '</article>';
+        }).join('');
+      }
+
+      async function refreshActions() {
+        const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/actions');
+        if (!res.ok) return;
+        const data = await res.json();
+        liked = !!data.liked;
+        saved = !!data.saved;
+        syncButtons();
+      }
+
+      async function refreshComments() {
+        const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/comments');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderComments(data.comments || []);
+      }
+
+      async function updateAction(payload) {
+        const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/actions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        liked = !!data.liked;
+        saved = !!data.saved;
+        syncButtons();
+      }
+
+      likeBtn.addEventListener('click', () => updateAction({ liked: !liked }));
+      saveBtn.addEventListener('click', () => updateAction({ saved: !saved }));
+      commentForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const body = commentInput.value.trim();
+        if (!body) return;
+        commentInput.disabled = true;
+        commentSubmit.disabled = true;
+        try {
+          const res = await fetch('/api/wiki/' + encodeURIComponent(slug) + '/comments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body }),
+          });
+          if (res.ok) {
+            commentInput.value = '';
+            await refreshComments();
+          }
+        } finally {
+          commentInput.disabled = false;
+          commentSubmit.disabled = false;
+        }
+      });
+
+      renderGenerator();
+      refreshActions();
+      refreshComments();
     })();
   </script>
 </body>
