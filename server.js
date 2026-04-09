@@ -1513,7 +1513,7 @@ app.get('/discover/:slug', readLimiter, requireAuth(), (req, res) => {
       }
 
       function formatCommentBody(text) {
-        return escapeHtml(String(text || '')).replace(/\\n/g, '<br>');
+        return escapeHtml(String(text || '')).replace(/\n/g, '<br>');
       }
 
       function renderCommentsMarkup(slug) {
@@ -1910,7 +1910,7 @@ app.get('/wiki/:slug', readLimiter, requireAuth(), (req, res) => {
       }
 
       function formatCommentBody(text) {
-        return escapeHtml(text).replace(/\\n/g, '<br>');
+        return escapeHtml(text).replace(/\n/g, '<br>');
       }
 
       function renderComments(comments) {
